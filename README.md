@@ -13,5 +13,6 @@
  
  
  #### feature todo:  
- * NativeArray替换NativeList，不依赖Collections包  
- * FastDynamicBone未优化完成  
+ * Mannager 增删查改 延迟队列
+ * 转移部分操作到MeshSkinning之后
+
