@@ -117,8 +117,7 @@ public class FastDynamicBoneManager : MonoBehaviour
 
     public void AddBone(FastDynamicBone target)
     {
-        int index = dynamicBoneList.IndexOf(target.GetHashCode());
-        if (index != -1) return;
+        if (dynamicBoneList.Contains(target.GetHashCode())) return;
 
         //m_ParticleTrees = 0 不管
         for (int i = 0; i < target.m_ParticleTrees.Count; i++)
@@ -150,8 +149,7 @@ public class FastDynamicBoneManager : MonoBehaviour
     public void ReadBone(FastDynamicBone target)
     {
         if (treeCount <= 0) return;
-        int index = dynamicBoneList.IndexOf(target.GetHashCode());
-        if (index == -1) return;
+        if (!dynamicBoneList.Contains(target.GetHashCode())) return;
 
         for (int i = 0; i < target.m_ParticleTrees.Count; i++)
         {
@@ -162,8 +160,7 @@ public class FastDynamicBoneManager : MonoBehaviour
     public void UpdateBone(FastDynamicBone target)
     {
         if (treeCount <= 0) return;
-        int index = dynamicBoneList.IndexOf(target.GetHashCode());
-        if (index == -1) return;
+        if (!dynamicBoneList.Contains(target.GetHashCode())) return;
 
         for (int i = 0; i < target.m_ParticleTrees.Count; i++)
         {
@@ -205,7 +202,7 @@ public class FastDynamicBoneManager : MonoBehaviour
 
     private void FixedUpdate()
     {
-        if (treeCount <= 0) return;
+        // if (treeCount <= 0) return;
         if (m_UpdateMode == UpdateMode.AnimatePhysics)
         {
             PreUpdate();
@@ -214,41 +211,65 @@ public class FastDynamicBoneManager : MonoBehaviour
 
     private void Update()
     {
-        if (treeCount <= 0) return;
+        // if (treeCount <= 0) return;
         if (m_UpdateMode != UpdateMode.AnimatePhysics)
         {
             PreUpdate();
         }
     }
 
-
+    public void BeforeLateUpdate(){}
+    
     private void LateUpdate()
     {
         if (treeCount <= 0) return;
         if (m_PreUpdateCount == 0)
             return;
-
+        
         UpdateAll();
+    }
 
+    public void AfterLateUpdate() 
+    {
+        // if (treeCount <= 0) return;
+        L3.ApplyParticlesTransformJob();
+        L2.ApplyParticlesTransformJob();
+        L1.ApplyParticlesTransformJob();
+        L0.ApplyParticlesTransformJob();
         m_PreUpdateCount = 0;
+    }
+
+    public void PostLateUpdate()
+    {
+    }
+
+    public void AfterRendering()
+    {
     }
 
     void PreUpdate()
     {
-        L0.PreUpdateJob();
-        L1.PreUpdateJob();
-        L2.PreUpdateJob();
+        L3.Complete();
+        L2.Complete();
+        L1.Complete();
+        L0.Complete();
         L3.PreUpdateJob();
+        L2.PreUpdateJob();
+        L1.PreUpdateJob();
+        L0.PreUpdateJob();
 
         ++m_PreUpdateCount;
     }
 
+    private int loop = 1;
+    private float timeVar = 1f;
+
     void UpdateAll()
     {
-        L0.PrepareJob();
-        L1.PrepareJob();
-        L2.PrepareJob();
         L3.PrepareJob();
+        L2.PrepareJob();
+        L1.PrepareJob();
+        L0.PrepareJob();
 
         switch (m_UpdateMode)
         {
@@ -265,8 +286,8 @@ public class FastDynamicBoneManager : MonoBehaviour
                 break;
         }
 
-        int loop = 1;
-        float timeVar = 1;
+        loop = 1;
+        timeVar = 1;
         float dt = m_DeltaTime;
         if (m_UpdateMode == UpdateMode.Default)
         {
@@ -294,12 +315,11 @@ public class FastDynamicBoneManager : MonoBehaviour
                 }
             }
         }
-
-        L0.UpdateParticlesJob(timeVar, loop);
-        L1.UpdateParticlesJob(timeVar, loop);
-        L2.UpdateParticlesJob(timeVar, loop);
         L3.UpdateParticlesJob(timeVar, loop);
-
+        L2.UpdateParticlesJob(timeVar, loop);
+        L1.UpdateParticlesJob(timeVar, loop);
+        L0.UpdateParticlesJob(timeVar, loop);
+        Unity.Jobs.JobHandle.ScheduleBatchedJobs();
     }
 
     private void OnDestroy()

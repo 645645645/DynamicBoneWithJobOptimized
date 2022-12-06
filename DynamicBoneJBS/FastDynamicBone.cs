@@ -1,6 +1,5 @@
 using UnityEngine;
 using System.Collections.Generic;
-using Unity.Mathematics;
 
 [AddComponentMenu("Fast Dynamic Bone/Fast Dynamic Bone")]
 public class FastDynamicBone : MonoBehaviour
@@ -44,12 +43,12 @@ public class FastDynamicBone : MonoBehaviour
     public float m_EndLength = 0;
 
     [Tooltip("If End Offset is not zero, an extra bone is generated at the end of transform hierarchy.")]
-    public float3 m_EndOffset = float3.zero;
+    public Vector3 m_EndOffset = Vector3.zero;
 
     [Tooltip("The force apply to bones. Partial force apply to character's initial pose is cancelled out.")]
-    public float3 m_Gravity = float3.zero;
+    public Vector3 m_Gravity = Vector3.zero;
 
-    [Tooltip("The force apply to bones.")] public float3 m_Force = float3.zero;
+    [Tooltip("The force apply to bones.")] public Vector3 m_Force = Vector3.zero;
 
     [Tooltip("Control how physics blends with existing animation.")] [Range(0, 1)]
     public float m_BlendWeight = 1.0f;
@@ -77,15 +76,15 @@ public class FastDynamicBone : MonoBehaviour
     public Transform m_ReferenceObject = null;
     public float m_DistanceToObject = 20;
 
-    [HideInInspector] public float3 m_ObjectMove;
-    [HideInInspector] public float3 m_ObjectPrevPosition;
+    [HideInInspector] public Vector3 m_ObjectMove;
+    [HideInInspector] public Vector3 m_ObjectPrevPosition;
     [HideInInspector] public float m_ObjectScale;
 
     [HideInInspector] public float m_Weight = 1.0f;
 
     bool m_DistantDisabled = false;
 
-    public class Particle
+    public struct Particle
     {
         public Transform m_Transform;
         public int m_ParentIndex;
@@ -101,27 +100,41 @@ public class FastDynamicBone : MonoBehaviour
         public bool m_isCollide;
         public bool m_TransformNotNull;
 
-        public float3 m_Position;
-        public float3 m_PrevPosition;
-        public float3 m_EndOffset;
-        public float3 m_InitLocalPosition;
-        public quaternion m_InitLocalRotation;
+        public Vector3 m_Position;
+        public Vector3 m_PrevPosition;
+        public Vector3 m_EndOffset;
+        public Vector3 m_InitLocalPosition;
+        public Quaternion m_InitLocalRotation;
+        public Quaternion m_InitRotation;
 
         // prepare data
         // public float3 m_TransformPosition;
         // public float3 m_TransformLocalPosition;
-        public float4x4 m_TransformLocalToWorldMatrix;
+        public Matrix4x4 m_TransformLocalToWorldMatrix;
     }
 
     public class ParticleTree
     {
         public Transform m_Root;
-        public float3 m_LocalGravity;
+        public Vector3 m_LocalGravity;
         public Matrix4x4 m_RootWorldToLocalMatrix;
-        public quaternion m_RootWorldRotation;
+        public Quaternion m_RootWorldRotation;
         public float m_BoneTotalLength;
         public int m_MaxDepth;
         public List<Particle> m_Particles = new List<Particle>();
+        
+        public void InitTransforms(ParticleTree pt)
+        {
+            for (int i = 0; i < pt.m_Particles.Count; ++i)
+            {
+                Particle p = pt.m_Particles[i];
+                if (p.m_TransformNotNull && p.m_Transform)
+                {
+                    p.m_Transform.localPosition = p.m_InitLocalPosition;
+                    p.m_Transform.localRotation = p.m_InitLocalRotation;
+                }
+            }
+        }
     }
 
     [HideInInspector] public List<ParticleTree> m_ParticleTrees = new List<ParticleTree>();
@@ -133,11 +146,15 @@ public class FastDynamicBone : MonoBehaviour
 
     // 角色隐藏是关MeshRender，
     // transform、animator 和 DynamicBone 都是活的 what's fk
-    
-    void OnTransformParentChanged()
-    {
-        SetupParticles();
-    }
+    // void OnBeforeTransformParentChanged()
+    // {
+    //     DynamicBoneManager.Instance?.RemoveBone(this);
+    //     InitTransforms();
+    // }
+    // void OnTransformParentChanged()
+    // {
+    //     SetupParticles();
+    // }
 
     void CheckDistance()
     {
@@ -178,13 +195,13 @@ public class FastDynamicBone : MonoBehaviour
 
     void Start()
     {
-        SetupParticles();
+        //SetupParticles();
     }
     
     void OnDestroy()
     {
         FastDynamicBoneManager.Instance?.RemoveBone(this);
-        // InitTransforms();
+        // InitTransforms();//复位通用bone
     }
 
     //OnValidate跟单例相性不合..
@@ -259,6 +276,7 @@ public class FastDynamicBone : MonoBehaviour
 
         if (Application.isEditor && !Application.isPlaying && transform.hasChanged)
         {
+            transform.hasChanged = false;
             //InitTransforms();
             SetupParticles(false);
         }
@@ -270,6 +288,11 @@ public class FastDynamicBone : MonoBehaviour
         {
             DrawGizmos(m_ParticleTrees[i]);
         }
+        // Gizmos.color = Color.green;
+        // for (int i = 0; i < m_ParticleTrees.Count; ++i)
+        // {
+        //     DrawGizomsInitPosForDebug(m_ParticleTrees[i]);
+        // }
     }
 
     void DrawGizmos(ParticleTree pt)
@@ -289,7 +312,45 @@ public class FastDynamicBone : MonoBehaviour
             }
         }
     }
+    void DrawGizomsInitPosForDebug(ParticleTree pt)
+    {
+        for (int i = 1; i < pt.m_Particles.Count; ++i)
+        {
+            Particle p = pt.m_Particles[i];
+            if (p.m_ParentIndex >= 0)
+            {
+                Particle p0 = pt.m_Particles[p.m_ParentIndex];
+                if (p.m_ParentIndex == 0)
+                {
+                    p.m_PrevPosition = MathematicsUtil.LocalToWorldPosition(p0.m_Transform.position,
+                        p0.m_Transform.rotation, p.m_InitLocalPosition);
+                    p.m_InitRotation = p0.m_Transform.rotation * p.m_InitLocalRotation;
+                }
+                else
+                {
+                    p.m_PrevPosition = MathematicsUtil.LocalToWorldPosition(p0.m_PrevPosition, p0.m_InitRotation,
+                        p.m_InitLocalPosition);
+                    p.m_InitRotation = p0.m_InitRotation * p.m_InitLocalRotation;
+                }
 
+                pt.m_Particles[i] = p;
+            }
+        }
+        for (int i = 1; i < pt.m_Particles.Count; ++i)
+        {
+            Particle p = pt.m_Particles[i];
+            if (p.m_ParentIndex >= 0)
+            {
+                Particle p0 = pt.m_Particles[p.m_ParentIndex];
+                // float3 v1 = p.m_PrevPosition.xyz;
+                // float3 v2 = p0.m_PrevPosition.xyz;
+                Vector3 v1 = p.m_PrevPosition;
+                Vector3 v2 = p0.m_ParentIndex >= 0 ? p0.m_PrevPosition : p0.m_Transform.position;
+                Gizmos.DrawLine(v1, v2);
+            }
+    
+        }
+    }
     public void SetWeight(float w)
     {
         if (m_Weight != w)
@@ -335,9 +396,9 @@ public class FastDynamicBone : MonoBehaviour
             }
         }
 
-        m_ObjectScale = math.abs(transform.lossyScale.x);
+        m_ObjectScale = Mathf.Abs(transform.lossyScale.x);
         m_ObjectPrevPosition = transform.position;
-        m_ObjectMove = float3.zero;
+        m_ObjectMove = Vector3.zero;
 
         for (int i = 0; i < m_ParticleTrees.Count; ++i)
         {
@@ -391,7 +452,7 @@ public class FastDynamicBone : MonoBehaviour
                 }
                 else
                 {
-                    p.m_EndOffset = new float3(m_EndLength, 0, 0);
+                    p.m_EndOffset = new Vector3(m_EndLength, 0, 0);
                 }
             }
             else
@@ -402,17 +463,19 @@ public class FastDynamicBone : MonoBehaviour
             p.m_Position = p.m_PrevPosition = pb.TransformPoint(p.m_EndOffset);
             // p.m_Position = p.m_PrevPosition =
             //     MathematicsUtil.LocalToWorldPosition(pb.position, pb.rotation, p.m_EndOffset);
-            p.m_InitLocalPosition = float3.zero;
-            p.m_InitLocalRotation = quaternion.identity;
+            p.m_InitLocalPosition = Vector3.zero;
+            p.m_InitLocalRotation = Quaternion.identity;
         }
 
         if (parentIndex >= 0)
         {
-            boneLength += math.distance((float3)pt.m_Particles[parentIndex].m_Transform.position, p.m_Position);
+            boneLength += Vector3.Distance(pt.m_Particles[parentIndex].m_Transform.position, p.m_Position);
             p.m_BoneLength = boneLength;
-            pt.m_BoneTotalLength = math.max(pt.m_BoneTotalLength, boneLength);
-            pt.m_MaxDepth = math.max(pt.m_MaxDepth, depth);
-            ++pt.m_Particles[parentIndex].m_ChildCount;
+            pt.m_BoneTotalLength = Mathf.Max(pt.m_BoneTotalLength, boneLength);
+            pt.m_MaxDepth = Mathf.Max(pt.m_MaxDepth, depth);
+            var mp = pt.m_Particles[parentIndex];
+            mp.m_ChildCount++;
+            pt.m_Particles[parentIndex] = mp;
         }
 
         int index = pt.m_Particles.Count;
@@ -434,13 +497,13 @@ public class FastDynamicBone : MonoBehaviour
                 {
                     AppendParticles(pt, child, index, boneLength, depth);
                 }
-                else if (m_EndLength > 0 || (Vector3)m_EndOffset != Vector3.zero)
+                else if (m_EndLength > 0 || m_EndOffset != Vector3.zero)
                 {
                     AppendParticles(pt, null, index, boneLength, depth);
                 }
             }
 
-            if (b.childCount == 0 && (m_EndLength > 0 || (Vector3)m_EndOffset != Vector3.zero))
+            if (b.childCount == 0 && (m_EndLength > 0 || m_EndOffset != Vector3.zero))
             {
                 AppendParticles(pt, null, index, boneLength, depth);
             }
@@ -461,10 +524,7 @@ public class FastDynamicBone : MonoBehaviour
     void UpdateParameters(ParticleTree pt)
     {
         // m_LocalGravity = m_Root.InverseTransformDirection(m_Gravity);
-        // pt.m_LocalGravity = pt.m_RootWorldToLocalMatrix.MultiplyVector(m_Gravity).normalized * math.length(m_Gravity);
-        pt.m_LocalGravity =
-            math.normalizesafe(math.mul(pt.m_RootWorldToLocalMatrix, new float4(m_Gravity.xyz, 0)).xyz) *
-            MathematicsUtil.Length(m_Gravity);
+        pt.m_LocalGravity = pt.m_RootWorldToLocalMatrix.MultiplyVector(m_Gravity).normalized * m_Gravity.magnitude;
 
         for (int i = 0; i < pt.m_Particles.Count; ++i)
         {
@@ -499,6 +559,7 @@ public class FastDynamicBone : MonoBehaviour
             p.m_Inert = Mathf.Clamp01(p.m_Inert);
             p.m_Friction = Mathf.Clamp01(p.m_Friction);
             p.m_Radius = Mathf.Max(p.m_Radius, 0);
+            pt.m_Particles[i] = p;
         }
     }
 
@@ -544,14 +605,12 @@ public class FastDynamicBone : MonoBehaviour
             }
             else // end bone
             {
-                // Transform pb = pt.m_Particles[p.m_ParentIndex].m_Transform;
-                // p.m_Position = p.m_PrevPosition = pb.TransformPoint(p.m_EndOffset);p.m_Position = p.m_PrevPosition = MathematicsUtil.LocalToWorldPosition(pb.position,pb.rotation,p.m_EndOffset);
                 p.m_Position = p.m_PrevPosition =
-                    math.mul(pt.m_Particles[p.m_ParentIndex].m_TransformLocalToWorldMatrix,
-                        new float4(p.m_EndOffset, 1)).xyz;
+                    pt.m_Particles[p.m_ParentIndex].m_TransformLocalToWorldMatrix.MultiplyPoint3x4(p.m_EndOffset);
             }
 
             p.m_isCollide = false;
+            pt.m_Particles[i] = p;
         }
     }
 }
