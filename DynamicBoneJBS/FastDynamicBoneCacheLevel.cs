@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Jobs;
 using Unity.Mathematics;
@@ -6,478 +5,661 @@ using Unity.Jobs;
 using Unity.Burst;
 using Unity.Collections;
 
-namespace Plugins.FastDynamicBone
+public struct HeadInfo
 {
-    public class DynamicBoneCacheLevel
+    public quaternion m_RootWorldRotation;
+    public float3 m_Gravity;
+    public float3 m_LocalGravity;
+    public float3 m_ObjectMove;
+
+    public float3 m_ObjectPrevPosition;
+
+    public float3 m_Force;
+    // public float3 m_FinalForce;
+
+    // prepare data
+    // public float3 m_RestGravity;
+
+    public float m_ObjectScale;
+
+    public float m_Weight;
+
+    // public float m_BoneTotalLength;
+    public int m_ParticleCount;
+    public int m_ColliderCount;
+    // public int m_MaxDepth;
+    public int m_MaxColliderLimit; // <--
+    public int m_MaxParticleLimit; // <--
+
+    public FastDynamicBone.FreezeAxis m_FreezeAxis;
+
+    public bool m_NeedUpdate;
+}
+
+public struct ParticleInfo
+{
+    public float4x4 m_TransformLocalToWorldMatrix;
+
+    public quaternion m_TransformRotation;
+
+    public quaternion m_InitLocalRotation;
+    public float3 m_Position;
+    public float3 m_PrevPosition;
+    public float3 m_EndOffset;
+
+    public float3 m_InitLocalPosition;
+
+    // prepare data
+    public float3 m_TransformLocalPosition;
+    public float3 m_TransformPosition;
+
+    //可合成float3/int3 DIF ESR PCM
+    public float m_Damping;
+    public float m_Elasticity;
+    public float m_Stiffness;
+    public float m_Inert;
+    public float m_Friction;
+    public float m_Radius;
+    public int m_ParentIndex;
+    public int m_ChildCount;
+    // public int m_Depth;
+    public int m_MaxParticleLimit; // <--
+
+    // public float m_BoneLength;
+    public bool m_isCollide;
+    public bool m_TransformNotNull;
+}
+
+public class FastDynamicBoneCacheLevel
+{
+    [Header("每个Tree的 Particle容量")] public int MaxParticleLimit; //别填0
+
+    [Header("最大Tree（root）容量")] public int MaxHeadLimit;
+
+    // [Header("每组Collider最大容量")]
+    public int MaxColliderLimit; //目前Collider没有分组啥的， 头发 裙子都共用同一组..
+    protected int MaxParticleLength;
+
+    protected int MaxColliderLength;
+
+    private int MaxParticleDepth;
+
+    //lateUpdate里更新的，不是add remove
+    protected int colliderLength;
+    protected int particleLength;
+    protected int headLength;
+
+
+    private NativeList<int> treeList; //取head collider particles以此index
+
+    private NativeList<HeadInfo> headInfoList;
+    private NativeList<ParticleInfo> particleInfoList;
+
+    private NativeList<FastDynamicBoneCollider.ColliderInfo> colliderInfoList;
+
+    //TransformAccessArray, remove是NativeList.. read是array..
+    //增删查改只能一个一个来
+    private TransformAccessArray rootTransformAccessArray;
+    private TransformAccessArray headTransformAccessArray;
+    private TransformAccessArray particleTransformAccessArray; //read
+
+    private TransformAccessArray colliderTransformAccessArray;
+
+    //修不了随机写的bug，按层级分组。。
+    private TransformAccessArray[] particalTransformAccessArraysWrite;
+
+    /// <summary>
+    /// 前3个得根据项目情况填，最后一个差不多行了
+    /// </summary>
+    /// <param name="maxParticleDepth">单个动态骨骼树的节点最大层数</param>
+    /// <param name="maxParticleLimit">单个动态骨骼树的节点最大数量</param>
+    /// <param name="maxColliderLimit">每组Collider的最大数量</param>
+    /// <param name="maxHeadLimit">同时容纳的tree最大数量</param>
+    public FastDynamicBoneCacheLevel(int maxParticleLimit, int maxParticleDepth = 10, int maxColliderLimit = 20, int maxHeadLimit = 100)
     {
-        [Header("每个Tree的 Particle容量")] public int MaxParticleLimit; //别填0
+        this.MaxParticleLimit = maxParticleLimit;
+        this.MaxColliderLimit = maxColliderLimit;
+        this.MaxHeadLimit = maxHeadLimit;
+        this.MaxParticleLength = maxHeadLimit * maxParticleLimit;
+        this.MaxColliderLength = maxHeadLimit * maxColliderLimit;
+        this.MaxParticleDepth = maxParticleDepth;
+    }
 
-        [Header("最大Tree（root）容量")] public int MaxHeadLimit;
+    public int GetTreeCount() => treeList.Length;
 
-        // [Header("每组Collider最大容量")]
-        public int MaxColliderLimit; //目前Collider没有分组啥的， 头发 裙子都共用同一组..
-        protected int MaxParticleLength;
+    private JobHandle lastJobHandle;
 
-        protected int MaxColliderLength;
+    public void InitNativeTable()
+    {
+        treeList = new NativeList<int>(Allocator.Persistent);
+        rootTransformAccessArray = new TransformAccessArray(MaxHeadLimit, 64);
 
-        //lateUpdate里更新的，不是add remove
-        protected int colliderLength;
-        protected int particleLength;
-        protected int headLength;
+        headInfoList = new NativeList<HeadInfo>(Allocator.Persistent);
+        headTransformAccessArray = new TransformAccessArray(MaxHeadLimit, 64);
+        //
+        particleInfoList = new NativeList<ParticleInfo>(Allocator.Persistent);
+        particleTransformAccessArray = new TransformAccessArray(MaxParticleLength, 64);
 
-        // [NonSerialized] public int treeCount = 0;
-        public List<FastDynamicBone.ParticleTree> treeList; //取head collider particles以此index
-        public List<FastDynamicBoneCollider> colliderList;
-        public NativeList<HeadInfo> headInfoList;
-        public NativeList<ParticleInfo> particleInfoList;
+        colliderInfoList = new NativeList<FastDynamicBoneCollider.ColliderInfo>(Allocator.Persistent);
+        colliderTransformAccessArray = new TransformAccessArray(MaxColliderLength, 64);
 
-        public NativeList<ColliderInfo> colliderInfoList;
-
-        //TransformAccessArray, remove是NativeList.. read是array..
-        public TransformAccessArray rootTransformAccessArray;
-        public TransformAccessArray headTransformAccessArray;
-        public TransformAccessArray particleTransformAccessArray;
-        public TransformAccessArray colliderTransformAccessArray;
-
-        /// <summary>
-        /// 前两个得根据项目情况填，第三个差不多行了
-        /// </summary>
-        /// <param name="maxParticleLimit">单个动态骨骼树的节点最大数量</param>
-        /// <param name="maxColliderLimit">每组Collider的最大数量</param>
-        /// <param name="maxHeadLimit"></param>
-        public DynamicBoneCacheLevel(int maxParticleLimit, int maxColliderLimit = 20, int maxHeadLimit = 100)
+        //tree depth 从0开始
+        particalTransformAccessArraysWrite = new TransformAccessArray[MaxParticleDepth];
+        for (int i = 0; i < MaxParticleDepth; i++)
         {
-            this.MaxParticleLimit = maxParticleLimit;
-            this.MaxColliderLimit = maxColliderLimit;
-            this.MaxHeadLimit = maxHeadLimit;
-            this.MaxParticleLength = maxHeadLimit * maxParticleLimit;
-            this.MaxColliderLength = maxHeadLimit * maxColliderLimit;
+            TransformAccessArray tmpArray = new TransformAccessArray(MaxParticleLength, 64);
+            particalTransformAccessArraysWrite[i] = tmpArray;
+        }
+    }
+
+    public void Dispose()
+    {
+        lastJobHandle.Complete();
+        if (treeList.IsCreated) treeList.Dispose();
+        if (rootTransformAccessArray.isCreated) rootTransformAccessArray.Dispose();
+        if (headInfoList.IsCreated) headInfoList.Dispose();
+        if (headTransformAccessArray.isCreated) headTransformAccessArray.Dispose();
+        if (particleInfoList.IsCreated) particleInfoList.Dispose();
+        if (particleTransformAccessArray.isCreated) particleTransformAccessArray.Dispose();
+        if (colliderInfoList.IsCreated) colliderInfoList.Dispose();
+        if (colliderTransformAccessArray.isCreated) colliderTransformAccessArray.Dispose();
+        for (int i = 0; i < MaxParticleDepth; i++)
+        {
+            TransformAccessArray tmpArray = particalTransformAccessArraysWrite[i];
+            if (tmpArray.isCreated)
+                tmpArray.Dispose();
         }
 
-        public int GetTreeCount() => treeList.Count;
+        particalTransformAccessArraysWrite = null;
+    }
 
-        public void InitNativeTable()
+    public bool RemoveTree(FastDynamicBone.ParticleTree tree, FastDynamicBone target)
+    {
+        int index = treeList.IndexOf(tree.GetHashCode());
+        if (index == -1) return false;
+
+        lastJobHandle.Complete();
+
+        treeList.RemoveAtSwapBack(index);
+
+        headInfoList.RemoveAtSwapBack(index);
+        headTransformAccessArray.RemoveAtSwapBack(index);
+
+        rootTransformAccessArray.RemoveAtSwapBack(index);
+
+        int offset = index * this.MaxParticleLimit;
+        particleInfoList.RemoveRangeSwapBack(offset, MaxParticleLimit);
+        for (int i = offset + MaxParticleLimit - 1; i >= offset; i--)
         {
-            treeList = new List<FastDynamicBone.ParticleTree>();
-            rootTransformAccessArray = new TransformAccessArray(MaxHeadLimit, 64);
-
-            colliderList = new List<FastDynamicBoneCollider>();
-
-            headInfoList = new NativeList<HeadInfo>(MaxHeadLimit, Allocator.Persistent);
-            headTransformAccessArray = new TransformAccessArray(MaxHeadLimit, 64);
-            //
-            particleInfoList = new NativeList<ParticleInfo>(MaxParticleLength, Allocator.Persistent);
-            particleTransformAccessArray = new TransformAccessArray(MaxParticleLength, 64);
-
-            colliderInfoList = new NativeList<ColliderInfo>(MaxColliderLength, Allocator.Persistent);
-            colliderTransformAccessArray = new TransformAccessArray(MaxColliderLength, 64);
+            // particleInfoList.RemoveAtSwapBack(i);
+            particleTransformAccessArray.RemoveAtSwapBack(i);
+            RemoveWriteParticle(i);
         }
 
-        public bool RemoveTree(FastDynamicBone.ParticleTree tree, FastDynamicBone target)
+        offset = index * MaxColliderLimit;
+        colliderInfoList.RemoveRangeSwapBack(offset, MaxColliderLimit);
+        for (int i = offset + MaxColliderLimit - 1; i >= offset; i--)
         {
-            int index = treeList.IndexOf(tree);
-            if (index == -1) return false;
-            
-            treeList.RemoveAt(index);
-
-            headInfoList.RemoveAtSwapBack(index);
-            headTransformAccessArray.RemoveAtSwapBack(index);
-
-            rootTransformAccessArray.RemoveAtSwapBack(index);
-
-            int offset = index * this.MaxParticleLimit;
-            for (int i = offset + MaxParticleLimit - 1; i >= offset; i--)
-            {
-                particleInfoList.RemoveAtSwapBack(i);
-                particleTransformAccessArray.RemoveAtSwapBack(i);
-            }
-
-            offset = index * MaxColliderLimit;
-            for (int i = offset + MaxColliderLimit - 1; i >= offset; i--)
-            {
-                colliderList.RemoveAt(i);
-                colliderInfoList.RemoveAtSwapBack(i);
-                colliderTransformAccessArray.RemoveAtSwapBack(i);
-            }
-            
-            headLength--;
-            colliderLength -= MaxColliderLimit;
-            particleLength -= MaxParticleLimit;
-            return true;
+            // colliderInfoList.RemoveAtSwapBack(i);
+            colliderTransformAccessArray.RemoveAtSwapBack(i);
         }
 
-        public bool AddTree(FastDynamicBone.ParticleTree tree, FastDynamicBone target)
+        headLength--;
+        colliderLength -= MaxColliderLimit;
+        particleLength -= MaxParticleLimit;
+        return true;
+    }
+
+    public bool AddTree(FastDynamicBone.ParticleTree tree, FastDynamicBone target)
+    {
+        if (GetTreeCount() >= MaxHeadLimit)
         {
-            if (GetTreeCount() >= MaxHeadLimit)
+            Debug.LogWarningFormat("DynamicBoneManager : root out of range ~");
+            return false;
+        }
+
+        int index = treeList.IndexOf(tree.GetHashCode());
+
+        if (index != -1)
+        {
+            //重复添加
+            return false;
+        }
+
+
+        lastJobHandle.Complete();
+        treeList.Add(tree.GetHashCode());
+
+        rootTransformAccessArray.Add(target.transform);
+
+        int m_ParticleCount = tree.m_Particles.Count;
+        var targetCollider = target.m_Colliders;
+        int cCount = targetCollider.Count;
+        int colliderCount = 0; //去空统计
+
+        for (int i = 0; i < MaxColliderLimit; i++)
+        {
+            if (i < cCount)
             {
-                Debug.LogWarningFormat("DynamicBoneManager : root out of range ~");
-                return false;
-            }
-
-            int index = treeList.IndexOf(tree);
-
-            if (index != -1)
-            {
-                //重复添加
-                return false;
-            }
-
-
-            // index = treeList.Count;
-            treeList.Add(tree);
-
-            rootTransformAccessArray.Add(target.transform);
-
-            int m_ParticleCount = tree.m_Particles.Count;
-            var targetCollider = target.m_Colliders;
-            int cCount = targetCollider.Count;
-            int colliderCount = 0; //去空和重复统计
-
-            for (int i = 0; i < MaxColliderLimit; i++)
-            {
-                if (i < cCount)
+                FastDynamicBoneCollider c = targetCollider[i];
+                if (c != null)
                 {
-                    FastDynamicBoneCollider c = targetCollider[i];
-                    if (c != null)
-                    {
-                        colliderList.Add(c);
-                        colliderInfoList.Add(c.ColliderInfo);
-                        colliderTransformAccessArray.Add(c.transform);
-                        colliderCount++;
-                    }
-                    else
-                    {
-                        Debug.LogWarningFormat("DynamicBone : Collider has someone null.");
-                    }
+                    c.init();
+                    colliderInfoList.Add(c.colliderInfo);
+                    colliderTransformAccessArray.Add(c.transform);
+                    colliderCount++;
                 }
                 else
                 {
-                    colliderList.Add(null);
-                    colliderInfoList.Add(new ColliderInfo());
-                    colliderTransformAccessArray.Add(null);
+                    Debug.LogErrorFormat("FastDynamicBone : Collider has someone null.");
                 }
             }
-
-            HeadInfo head = new HeadInfo()
+            else
             {
-                // m_Index = index,//删除index会变..这个不要了，每次重取indexof
-                // m_RootWorldToLocalMatrix = tree.m_RootWorldToLocalMatrix,
-                m_RootLocalToWorldMatrix = tree.m_RootLocalToWorldMatrix,
-                m_Gravity = target.m_Gravity,
-                m_LocalGravity = tree.m_LocalGravity,
-                m_ObjectMove = target.m_ObjectMove,
-                m_ObjectPrevPosition = target.m_ObjectPrevPosition,
-                m_Force = target.m_Force,
-                m_ObjectScale = target.m_ObjectScale,
-                m_Weight = target.m_Weight,
-                // m_BoneTotalLength = tree.m_BoneTotalLength,
-                m_ParticleCount = m_ParticleCount,
-                m_ColliderCount = colliderCount,
-                m_MaxColliderLimit = MaxColliderLimit,
-                m_FreezeAxis = target.m_FreezeAxis,
-                m_NeedUpdate = (m_ParticleCount > 0) && (target.m_Weight > 0)
-            };
-            headInfoList.Add(head);
-            headTransformAccessArray.Add(tree.m_Root);
+                colliderInfoList.Add(new FastDynamicBoneCollider.ColliderInfo());
+                colliderTransformAccessArray.Add(null);
+            }
+        }
 
-            int pCount = m_ParticleCount;
-            int pLimit = MaxParticleLimit;
-            for (int i = 0; i < pLimit; i++)
+        HeadInfo head = new HeadInfo()
+        {
+            m_RootWorldRotation = tree.m_RootWorldRotation,
+            m_Gravity = target.m_Gravity,
+            m_LocalGravity = tree.m_LocalGravity,
+            m_ObjectMove = target.m_ObjectMove,
+            m_ObjectPrevPosition = target.m_ObjectPrevPosition,
+            m_Force = target.m_Force,
+            m_ObjectScale = target.m_ObjectScale,
+            m_Weight = target.m_Weight,
+            // m_BoneTotalLength = tree.m_BoneTotalLength,
+            m_ParticleCount = m_ParticleCount,
+            m_ColliderCount = colliderCount,
+            // m_MaxDepth = tree.m_MaxDepth,
+            m_MaxColliderLimit = MaxColliderLimit,
+            m_MaxParticleLimit = MaxParticleLimit,
+            m_FreezeAxis = target.m_FreezeAxis,
+            m_NeedUpdate = (m_ParticleCount > 0) && (target.m_Weight > 0)
+        };
+        headInfoList.Add(head);
+        headTransformAccessArray.Add(tree.m_Root);
+
+        int pCount = m_ParticleCount;
+        int pLimit = MaxParticleLimit;
+        for (int i = 0; i < pLimit; i++)
+        {
+            if (i < pCount)
             {
-                if (i < pCount)
+                var p = tree.m_Particles[i];
+                ParticleInfo pInfo = new ParticleInfo()
                 {
-                    var p = tree.m_Particles[i];
-                    ParticleInfo pInfo = new ParticleInfo()
-                    {
-                        m_ParentIndex = p.m_ParentIndex,
-                        m_ChildCount = p.m_ChildCount,
-                        m_MaxParticleLimit = pLimit,
-                        m_Damping = p.m_Damping,
-                        m_Elasticity = p.m_Elasticity,
-                        m_Stiffness = p.m_Stiffness,
-                        m_Inert = p.m_Inert,
-                        m_Friction = p.m_Friction,
-                        m_Radius = p.m_Radius,
-                        // m_BoneLength = p.m_BoneLength,
-                        m_isCollide = p.m_isCollide,
-                        m_TransformNotNull = p.m_TransformNotNull,
+                    m_ParentIndex = p.m_ParentIndex,
+                    m_ChildCount = p.m_ChildCount,
+                    // m_Depth = p.m_Depth,
+                    m_MaxParticleLimit = pLimit,
+                    m_Damping = p.m_Damping,
+                    m_Elasticity = p.m_Elasticity,
+                    m_Stiffness = p.m_Stiffness,
+                    m_Inert = p.m_Inert,
+                    m_Friction = p.m_Friction,
+                    m_Radius = p.m_Radius,
+                    // m_BoneLength = p.m_BoneLength,
+                    m_isCollide = p.m_isCollide,
+                    m_TransformNotNull = p.m_TransformNotNull,
 
-                        m_Position = p.m_Position,
-                        m_PrevPosition = p.m_PrevPosition,
-                        m_EndOffset = p.m_EndOffset,
-                        m_InitLocalPosition = p.m_InitLocalPosition,
-                        m_InitLocalRotation = p.m_InitLocalRotation
-                    };
-                    particleInfoList.Add(pInfo);
-                    particleTransformAccessArray.Add(tree.m_Particles[i].m_Transform);
+                    m_Position = p.m_Position,
+                    m_PrevPosition = p.m_PrevPosition,
+                    m_EndOffset = p.m_EndOffset,
+                    m_InitLocalPosition = p.m_InitLocalPosition,
+                    m_InitLocalRotation = p.m_InitLocalRotation,
+                };
+                particleInfoList.Add(pInfo);
+                particleTransformAccessArray.Add(p.m_Transform);
+                // Debug.LogWarningFormat("Add : name = {0}, i = {1}", p.m_Transform.name, i);
+                AddWriteParticle(p.m_Depth, p.m_Transform);
+            }
+            else
+            {
+                //超过  占位/空 即冗余
+                particleInfoList.Add(new ParticleInfo(){ m_MaxParticleLimit = pLimit });
+                particleTransformAccessArray.Add(null);
+                AddWriteParticle(-1, null);
+            }
+        }
+
+        headLength++;
+        colliderLength += MaxColliderLimit;
+        particleLength += MaxParticleLimit;
+        return true;
+    }
+
+    public void ReadTree(FastDynamicBone.ParticleTree tree)
+    {
+        int index = treeList.IndexOf(tree.GetHashCode());
+        if (index == -1) return;
+
+        lastJobHandle.Complete();
+
+        HeadInfo head = headInfoList[index];
+        int count = math.min(head.m_ParticleCount, tree.m_Particles.Count);
+
+        int offset = index * MaxParticleLimit;
+        for (int i = 0; i < count; i++)
+        {
+            ParticleInfo pInfo = particleInfoList[i + offset];
+            FastDynamicBone.Particle p = tree.m_Particles[i];
+            p.m_Position = pInfo.m_TransformPosition;
+        }
+    }
+
+    //手动分层，保证结果
+    private void AddWriteParticle(int depth, Transform transform)
+    {
+        if (depth >= MaxParticleDepth)
+        {
+            Debug.LogErrorFormat("骨骼链太长 /{name = {0}/}，目前限制单链最大长度 = {1}", transform.name, MaxParticleDepth - 1);
+        }
+        for (int i = 0; i < MaxParticleDepth; i++)
+        {
+            particalTransformAccessArraysWrite[i].Add(i == depth ? transform : null);
+        }
+    }
+
+    private void RemoveWriteParticle(int index)
+    {
+        for (int i = 0; i < MaxParticleDepth; i++)
+        {
+            particalTransformAccessArraysWrite[i].RemoveAtSwapBack(index);
+        }
+    }
+
+    public void UpdateTree(FastDynamicBone.ParticleTree tree, FastDynamicBone target)
+    {
+        int index = treeList.IndexOf(tree.GetHashCode());
+        if (index == -1) return;
+
+        lastJobHandle.Complete();
+
+        HeadInfo head = headInfoList[index];
+        int m_ParticleCount = tree.m_Particles.Count;
+        head.m_LocalGravity = tree.m_LocalGravity;
+        head.m_Force = target.m_Force;
+        head.m_Weight = target.m_Weight;
+        head.m_ParticleCount = m_ParticleCount;
+        head.m_FreezeAxis = target.m_FreezeAxis;
+        head.m_NeedUpdate = (m_ParticleCount > 0) && (target.m_Weight > 0);
+
+        int offset = index * MaxParticleLimit;
+        int pIndex;
+        for (int i = 0; i < m_ParticleCount; i++)
+        {
+            pIndex = i + offset;
+            ParticleInfo pInfo = particleInfoList[pIndex];
+            FastDynamicBone.Particle p = tree.m_Particles[i];
+            // p.m_Position = pInfo.m_Position;
+            pInfo.m_Damping = p.m_Damping;
+            pInfo.m_Elasticity = p.m_Elasticity;
+            pInfo.m_Stiffness = p.m_Stiffness;
+            pInfo.m_Inert = p.m_Inert;
+            pInfo.m_Friction = p.m_Friction;
+            pInfo.m_Radius = p.m_Radius;
+            particleInfoList[pIndex] = pInfo;
+        }
+
+        var targetCollider = target.m_Colliders;
+        int cCount = targetCollider.Count;
+        int colliderCount = 0; //去空和重复统计
+
+        offset = index * MaxColliderLimit;
+        for (int i = 0; i < MaxColliderLimit; i++)
+        {
+            if (i < cCount)
+            {
+                FastDynamicBoneCollider c = targetCollider[i];
+                if (c != null)
+                {
+                    c.init();
+                    int cIndex = offset + i;
+                    colliderInfoList[cIndex] = c.colliderInfo;
+                    colliderTransformAccessArray[cIndex] = c.transform;
+                    colliderCount++;
                 }
                 else
                 {
-                    //超过  占位/空 即冗余
-                    particleInfoList.Add(new ParticleInfo() { });
-                    particleTransformAccessArray.Add(null);
-                }
-            }
-
-            headLength++;
-            colliderLength += MaxColliderLimit;
-            particleLength += MaxParticleLimit;
-            return true;
-        }
-
-        public void Dispose()
-        {
-            if (rootTransformAccessArray.isCreated) rootTransformAccessArray.Dispose();
-            if (headInfoList.IsCreated) headInfoList.Dispose();
-            if (headTransformAccessArray.isCreated) headTransformAccessArray.Dispose();
-            if (particleInfoList.IsCreated) particleInfoList.Dispose();
-            if (particleTransformAccessArray.isCreated) particleTransformAccessArray.Dispose();
-            if (colliderInfoList.IsCreated) colliderInfoList.Dispose();
-            if (colliderTransformAccessArray.isCreated) colliderTransformAccessArray.Dispose();
-        }
-
-        public JobHandle PreUpdateJob(JobHandle dependencies)
-        {
-            return new InitTransformsJob()
-            {
-                ParticleInfos = particleInfoList
-            }.Schedule(particleTransformAccessArray, dependencies);
-        }
-
-        public JobHandle PrepareJob(JobHandle dependencies)
-        {
-            headLength = headInfoList.Length;
-            particleLength = headLength * MaxParticleLimit;
-            colliderLength = colliderInfoList.Length;
-
-            JobHandle headSetupHandle = new HeadSetupJob()
-            {
-                HeadInfos = headInfoList,
-            }.Schedule(rootTransformAccessArray);
-
-            JobHandle headPrepareHandle = new HeadPrepareJob()
-            {
-                HeadInfos = headInfoList,
-            }.Schedule(headLength, 32, headSetupHandle);
-
-            JobHandle colliderSetupHandle = new ColliderSetupJob()
-            {
-                ColliderInfos = colliderInfoList
-            }.Schedule(colliderTransformAccessArray);
-
-            JobHandle colliderPrepareHandle = new ColliderPrepareJob()
-            {
-                ColliderInfos = colliderInfoList
-            }.Schedule(colliderLength, 32, colliderSetupHandle);
-
-            //先放短的 后放长的..
-            JobHandle particleSetupHandle = new ParticleSetupJob()
-            {
-                ParticleInfos = particleInfoList
-            }.Schedule(particleTransformAccessArray, dependencies);
-
-            return JobHandle.CombineDependencies(headPrepareHandle, particleSetupHandle, colliderPrepareHandle);
-        }
-
-        public JobHandle UpdateParticlesJob(JobHandle dependencies, float timeVar, int loop)
-        {
-            //
-            JobHandle updateAllParticlesHandle = new UpdateAllParticlesJob()
-            {
-                timeVar = timeVar,
-                loop = loop,
-                HeadInfos = headInfoList,
-                ParticleInfos = particleInfoList,
-                ColliderInfos = colliderInfoList
-            }.Schedule(particleLength, 64, dependencies);
-
-            JobHandle applyParticlesHandle = new ApplyParticlesJob()
-            {
-                HeadInfos = headInfoList,
-                ParticleInfos = particleInfoList
-            }.Schedule(particleLength, 64, updateAllParticlesHandle);
-
-            JobHandle applyParticlesToTransformsHandle = new ApplyParticlesToTransformsJob()
-            {
-                ParticleInfos = particleInfoList
-            }.Schedule(particleTransformAccessArray, applyParticlesHandle);
-
-            return applyParticlesToTransformsHandle;
-        }
-
-
-        #region prePare
-
-        [BurstCompile]
-        private struct ColliderSetupJob : IJobParallelForTransform
-        {
-            // [ReadOnly] public NativeArray<HeadInfo> HeadInfos;
-
-            [NativeDisableParallelForRestriction] public NativeArray<ColliderInfo> ColliderInfos;
-
-            public void Execute(int index, TransformAccess transform)
-            {
-                ColliderInfo colliderInfo = ColliderInfos[index];
-                colliderInfo.Position = transform.position;
-                colliderInfo.Rotation = transform.rotation;
-                colliderInfo.Scale = MathematicsUtil.GetLossyScaleX(transform);
-                ColliderInfos[index] = colliderInfo;
-            }
-        }
-
-        [BurstCompile]
-        private struct HeadSetupJob : IJobParallelForTransform
-        {
-            [NativeDisableParallelForRestriction] public NativeArray<HeadInfo> HeadInfos;
-
-            //入参 root
-            public void Execute(int index, TransformAccess transform)
-            {
-                HeadInfo head = HeadInfos[index];
-                if (head.m_NeedUpdate)
-                {
-                    head.m_ObjectScale = math.abs(MathematicsUtil.GetLossyScaleX(transform));
-                    head.m_ObjectMove = (float3)transform.position - head.m_ObjectPrevPosition;
-                    head.m_ObjectPrevPosition = transform.position;
-                    HeadInfos[index] = head;
+                    Debug.LogErrorFormat("FastDynamicBone : Collider has someone null.");
                 }
             }
         }
 
+        head.m_ColliderCount = colliderCount;
+        headInfoList[index] = head;
+    }
 
-        [BurstCompile]
-        private struct ParticleSetupJob : IJobParallelForTransform
+
+    public JobHandle PreUpdateJob()
+    {
+        lastJobHandle.Complete();
+
+        // feature:
+        // 收集增删查改操作，弄个队列 放到这里执行..
+
+        return lastJobHandle = new InitTransformsJob()
         {
-            [NativeDisableParallelForRestriction] public NativeArray<ParticleInfo> ParticleInfos;
+            ParticleInfos = particleInfoList
+        }.Schedule(particleTransformAccessArray, lastJobHandle);
+    }
 
-            public void Execute(int index, TransformAccess transform)
+    public JobHandle PrepareJob()
+    {
+        JobHandle headSetupHandle = new HeadSetupJob()
+        {
+            HeadInfos = headInfoList,
+        }.Schedule(rootTransformAccessArray);
+
+        JobHandle colliderSetupHandle = new ColliderSetupJob()
+        {
+            ColliderInfos = colliderInfoList
+        }.Schedule(colliderTransformAccessArray);
+
+        JobHandle colliderPrepareHandle = new ColliderPrepareJob()
+        {
+            ColliderInfos = colliderInfoList
+        }.Schedule(colliderLength, 32, colliderSetupHandle);
+
+        //先放短的 后放长的..
+        JobHandle particleSetupHandle = new ParticleSetupJob()
+        {
+            ParticleInfos = particleInfoList
+        }.Schedule(particleTransformAccessArray, lastJobHandle);
+
+        return lastJobHandle =
+            JobHandle.CombineDependencies(headSetupHandle, particleSetupHandle, colliderPrepareHandle);
+    }
+
+    public JobHandle UpdateParticlesJob(float timeVar, int loop)
+    {
+        //UpdateParticles1可以拆出来...实测particle多才有点提升.
+        JobHandle updateAllParticlesHandle = new UpdateAllParticlesJobUseHead()
+        {
+            timeVar = timeVar,
+            loop = loop,
+            HeadInfos = headInfoList,
+            ParticleInfos = particleInfoList,
+            ColliderInfos = colliderInfoList
+        }.Schedule(headLength, 32, lastJobHandle);
+
+        JobHandle applyParticlesHandle = new ApplyParticlesJob()
+        {
+            HeadInfos = headInfoList,
+            ParticleInfos = particleInfoList
+        }.Schedule(headLength, 32, updateAllParticlesHandle);
+
+        for (int i = 0; i < MaxParticleDepth; i++)
+        {
+            lastJobHandle = new ApplyParticlesToTransformsJob()
             {
-                {
-                    ParticleInfo p = ParticleInfos[index];
-                    if (p.m_TransformNotNull)
-                    {
-                        p.m_TransformPosition = transform.position;
-                        p.m_TransformRotation = transform.rotation;
-                        p.m_TransformLocalPosition = transform.localPosition;
-                        p.m_TransformLocalToWorldMatrix = transform.localToWorldMatrix;
-                        ParticleInfos[index] = p;
-                    }
-                }
-            }
+                ParticleInfos = particleInfoList
+            }.Schedule(particalTransformAccessArraysWrite[i], i == 0 ? applyParticlesHandle : lastJobHandle);
         }
 
-        #endregion
+        return lastJobHandle;
+    }
 
+    #region prePare
 
-        #region preUpdate
+    [BurstCompile]
+    private struct ColliderSetupJob : IJobParallelForTransform
+    {
+        // [ReadOnly] public NativeArray<HeadInfo> HeadInfos;
 
-        [BurstCompile]
-        private struct InitTransformsJob : IJobParallelForTransform
+        [NativeDisableParallelForRestriction] public NativeArray<FastDynamicBoneCollider.ColliderInfo> ColliderInfos;
+
+        public void Execute(int index, TransformAccess transform)
         {
-            [ReadOnly] [NativeDisableParallelForRestriction]
-            public NativeArray<ParticleInfo> ParticleInfos;
+            FastDynamicBoneCollider.ColliderInfo colliderInfo = ColliderInfos[index];
+            colliderInfo.Position = transform.position;
+            colliderInfo.Rotation = transform.rotation;
+            colliderInfo.Scale = MathematicsUtil.GetLossyScaleX(transform);
+            ColliderInfos[index] = colliderInfo;
+        }
+    }
 
-            public void Execute(int index, TransformAccess transform)
+    [BurstCompile]
+    private struct HeadSetupJob : IJobParallelForTransform
+    {
+        [NativeDisableParallelForRestriction] public NativeArray<HeadInfo> HeadInfos;
+
+        //入参 root
+        public void Execute(int index, TransformAccess transform)
+        {
+            HeadInfo head = HeadInfos[index];
+            if (head.m_NeedUpdate)
+            {
+                head.m_ObjectScale = math.abs(MathematicsUtil.GetLossyScaleX(transform));
+                head.m_ObjectMove = (float3)transform.position - head.m_ObjectPrevPosition;
+                head.m_ObjectPrevPosition = transform.position;
+                head.m_RootWorldRotation = transform.rotation;
+                HeadInfos[index] = head;
+            }
+        }
+    }
+
+
+    [BurstCompile]
+    private struct ParticleSetupJob : IJobParallelForTransform
+    {
+        [NativeDisableParallelForRestriction] public NativeArray<ParticleInfo> ParticleInfos;
+
+        public void Execute(int index, TransformAccess transform)
+        {
             {
                 ParticleInfo p = ParticleInfos[index];
                 if (p.m_TransformNotNull)
                 {
-                    transform.localPosition = p.m_InitLocalPosition;
-                    transform.localRotation = p.m_InitLocalRotation;
+                    p.m_TransformPosition = transform.position;
+                    p.m_TransformRotation = transform.rotation;
+                    p.m_TransformLocalPosition = transform.localPosition;
+                    p.m_TransformLocalToWorldMatrix = transform.localToWorldMatrix;
+                    ParticleInfos[index] = p;
                 }
             }
         }
+    }
 
-        #endregion
+    #endregion
 
-        #region LateUpdate
 
-        //collider比head长
-        //但不依赖head会更快
-        [BurstCompile]
-        private struct ColliderPrepareJob : IJobParallelFor
+    #region preUpdate
+
+    [BurstCompile]
+    private struct InitTransformsJob : IJobParallelForTransform
+    {
+        [ReadOnly] [NativeDisableParallelForRestriction]
+        public NativeArray<ParticleInfo> ParticleInfos;
+
+        public void Execute(int index, TransformAccess transform)
         {
-            // [ReadOnly] public NativeArray<HeadInfo> HeadInfos;
-            [NativeDisableParallelForRestriction] public NativeArray<ColliderInfo> ColliderInfos;
-
-            public void Execute(int index)
+            ParticleInfo p = ParticleInfos[index];
+            if (p.m_TransformNotNull)
             {
-                // int hIndex = index / MaxColliderLimit;
-                // HeadInfo head = HeadInfos[hIndex];
-                // int cIndex = index % MaxColliderLimit;
-                // if(head.m_NeedUpdate && head.m_ColliderCount > 0 && cIndex < head.m_ColliderCount)
-                {
-                    //collider prepare
-                    ColliderInfo c = ColliderInfos[index];
-                    FastDynamicBoneCollider.Prepare(ref c);
-                    ColliderInfos[index] = c;
-                }
+                transform.localPosition = p.m_InitLocalPosition;
+                transform.localRotation = p.m_InitLocalRotation;
             }
         }
+    }
 
-        [BurstCompile]
-        private struct HeadPrepareJob : IJobParallelFor
+    #endregion
+
+    #region LateUpdate
+
+    //collider比head长
+    //但不依赖head会更快
+    [BurstCompile]
+    private struct ColliderPrepareJob : IJobParallelFor
+    {
+        // [ReadOnly] public NativeArray<HeadInfo> HeadInfos;
+        [NativeDisableParallelForRestriction] public NativeArray<FastDynamicBoneCollider.ColliderInfo> ColliderInfos;
+
+        public void Execute(int index)
         {
-            [ReadOnly] public float timeVar;
-            [NativeDisableParallelForRestriction] public NativeArray<HeadInfo> HeadInfos;
-
-            public void Execute(int index)
+            // int hIndex = index / MaxColliderLimit;
+            // HeadInfo head = HeadInfos[hIndex];
+            // int cIndex = index % MaxColliderLimit;
+            // if(head.m_NeedUpdate && head.m_ColliderCount > 0 && cIndex < head.m_ColliderCount)
             {
-                HeadInfo head = HeadInfos[index];
-                if (head.m_NeedUpdate)
-                {
-                    float3 m_RestGravity =
-                        math.normalizesafe(math.mul(head.m_RootLocalToWorldMatrix, new float4(head.m_LocalGravity, 0))
-                            .xyz) *
-                        MathematicsUtil.Length(head.m_LocalGravity);
-                    float3 force = head.m_Gravity;
-                    float3 fdir = math.normalizesafe(head.m_Gravity);
-                    float3 pf = fdir * math.max(math.dot(m_RestGravity, fdir),
-                        0); // project current gravity to rest gravity
-                    force -= pf; // remove projected gravity
-                    head.m_Force = (force + head.m_Force) * (head.m_ObjectScale * timeVar);
-                    HeadInfos[index] = head;
-                }
+                //collider prepare
+                FastDynamicBoneCollider.ColliderInfo c = ColliderInfos[index];
+                FastDynamicBoneCollider.Prepare(ref c);
+                ColliderInfos[index] = c;
             }
         }
+    }
 
+    //考虑拆开，UpdateParticles1可以以Particle为单位并行
+    [BurstCompile]
+    private struct UpdateAllParticlesJobUseHead : IJobParallelFor
+    {
+        [ReadOnly] public float timeVar;
 
-        [BurstCompile]
-        private struct UpdateAllParticlesJob : IJobParallelFor
+        [ReadOnly] public int loop;
+
+        [ReadOnly] [NativeDisableParallelForRestriction]
+        public NativeArray<HeadInfo> HeadInfos;
+
+        [ReadOnly] [NativeDisableParallelForRestriction]
+        public NativeArray<FastDynamicBoneCollider.ColliderInfo> ColliderInfos;
+
+        [NativeDisableParallelForRestriction] public NativeArray<ParticleInfo> ParticleInfos;
+
+        public void Execute(int index)
         {
-            [ReadOnly] public float timeVar;
-
-            [ReadOnly] public int loop;
-
-            [ReadOnly] [NativeDisableParallelForRestriction]
-            public NativeArray<HeadInfo> HeadInfos;
-
-            [ReadOnly] [NativeDisableParallelForRestriction]
-            public NativeArray<ColliderInfo> ColliderInfos;
-
-            [NativeDisableParallelForRestriction] public NativeArray<ParticleInfo> ParticleInfos;
-
-            public void Execute(int index)
+            HeadInfo head = HeadInfos[index];
+            if (!head.m_NeedUpdate)
+                return;
+            float3 m_RestGravity =
+                MathematicsUtil.TransformDirection(head.m_ObjectPrevPosition, head.m_RootWorldRotation,
+                    head.m_LocalGravity);
+            float3 force = head.m_Gravity;
+            float3 fdir = MathematicsUtil.Normalize(head.m_Gravity);
+            float3 pf = fdir * math.max(math.dot(m_RestGravity, fdir),
+                0); // project current gravity to rest gravity
+            force -= pf; // remove projected gravity
+            force = (force + head.m_Force) * (head.m_ObjectScale * timeVar);
+            // HeadInfos[index] = head;
+            int pMaxParticleLimit = head.m_MaxParticleLimit;
+            if (pMaxParticleLimit <= 0)
+                return;
+            int offset = index * pMaxParticleLimit;
+            if (loop > 0)
             {
-                int pIndex = index;
-                ParticleInfo p = ParticleInfos[pIndex];
-                int pMaxParticleLimit = p.m_MaxParticleLimit;
-                if (pMaxParticleLimit <= 0)
-                    return;
-                int hIndex = index / pMaxParticleLimit;
-                HeadInfo head = HeadInfos[hIndex];
-                if (!head.m_NeedUpdate)
-                    return;
-                int pIndexLocal = index % pMaxParticleLimit;
-                int offset = hIndex * pMaxParticleLimit;
-                if (loop > 0)
+                for (int loopIndex = 0; loopIndex < loop; loopIndex++)
                 {
-                    for (int loopIndex = 0; loopIndex < loop; loopIndex++)
+                    float3 objectMove =
+                        loopIndex == 0 ? head.m_ObjectMove : float3.zero;
+                    for (int i = 0; i < pMaxParticleLimit; i++)
                     {
-                        float3 objectMove =
-                            loopIndex == 0 ? head.m_ObjectMove : float3.zero; // only first loop consider object move
-
-                        if (pIndexLocal < head.m_ParticleCount)
+                        int pIndex = i + offset;
+                        ParticleInfo p = ParticleInfos[pIndex];
+                        if (i < head.m_ParticleCount)
                         {
                             if (p.m_ParentIndex >= 0)
                             {
@@ -496,7 +678,7 @@ namespace Plugins.FastDynamicBone
                                     p.m_isCollide = false;
                                 }
 
-                                float3 force = head.m_Force;
+                                // float3 force = head.m_FinalForce;
                                 p.m_Position += v * (1 - damping) + force + rmove;
                             }
                             else
@@ -505,17 +687,15 @@ namespace Plugins.FastDynamicBone
                                 p.m_Position = p.m_TransformPosition;
                             }
 
-
-                            //UpdateParticles2
-                            if (pIndexLocal > 0)
+                            if (i > 0)
                             {
                                 int ppIndex = p.m_ParentIndex + offset;
                                 ParticleInfo p0 = ParticleInfos[ppIndex];
 
                                 float restLen = p.m_TransformNotNull
                                     ? math.distance(p0.m_TransformPosition, p.m_TransformPosition)
-                                    : MathematicsUtil.Length(math.mul(p0.m_TransformLocalToWorldMatrix,
-                                        new float4(p.m_EndOffset, 0)).xyz);
+                                    : MathematicsUtil.Length(math.mul((float3x3)p0.m_TransformLocalToWorldMatrix,
+                                        p.m_EndOffset));
 
                                 // keep shape
                                 float stiffness = math.lerp(1.0f, p.m_Stiffness, head.m_Weight);
@@ -546,7 +726,7 @@ namespace Plugins.FastDynamicBone
                                 // collide
                                 if (head.m_ColliderCount > 0)
                                 {
-                                    int cOffset = hIndex * head.m_MaxColliderLimit;
+                                    int cOffset = index * head.m_MaxColliderLimit;
                                     float particleRadius = p.m_Radius * head.m_ObjectScale;
                                     for (int j = 0; j < head.m_MaxColliderLimit; j++)
                                     {
@@ -554,7 +734,7 @@ namespace Plugins.FastDynamicBone
                                         if (j < head.m_ColliderCount)
                                         {
                                             cIndex = j + cOffset;
-                                            ColliderInfo c = ColliderInfos[cIndex];
+                                            FastDynamicBoneCollider.ColliderInfo c = ColliderInfos[cIndex];
                                             p.m_isCollide |= FastDynamicBoneCollider.HandleCollision(in c,
                                                 ref p.m_Position, in particleRadius);
                                         }
@@ -572,14 +752,17 @@ namespace Plugins.FastDynamicBone
                                     switch ((int)freezeAxis - 1)
                                     {
                                         case 0:
-                                            planeNormal = MathematicsUtil.Normalize(p0.m_TransformLocalToWorldMatrix.c0).xyz;
+                                            planeNormal = MathematicsUtil
+                                                .Normalize(p0.m_TransformLocalToWorldMatrix.c0).xyz;
                                             break;
                                         case 1:
-                                            planeNormal = MathematicsUtil.Normalize(p0.m_TransformLocalToWorldMatrix.c1).xyz;
+                                            planeNormal = MathematicsUtil
+                                                .Normalize(p0.m_TransformLocalToWorldMatrix.c1).xyz;
                                             break;
                                         case 2:
                                         default:
-                                            planeNormal = MathematicsUtil.Normalize(p0.m_TransformLocalToWorldMatrix.c2).xyz;
+                                            planeNormal = MathematicsUtil
+                                                .Normalize(p0.m_TransformLocalToWorldMatrix.c2).xyz;
                                             break;
                                     }
 
@@ -599,12 +782,16 @@ namespace Plugins.FastDynamicBone
                         }
                     }
                 }
-                else
+            }
+            else
+            {
+                for (int i = 0; i < pMaxParticleLimit; i++)
                 {
-                    // SkipUpdateParticles();
-                    if (pIndexLocal < head.m_ParticleCount)
+                    int pIndex = i + offset;
+                    ParticleInfo p = ParticleInfos[pIndex];
+                    if (i < head.m_ParticleCount)
                     {
-                        if (p.m_ParentIndex >= 0)
+                        if (p.m_ParentIndex > 0)
                         {
                             p.m_PrevPosition += head.m_ObjectMove;
                             p.m_Position += head.m_ObjectMove;
@@ -613,10 +800,10 @@ namespace Plugins.FastDynamicBone
                             int ppIndex = p.m_ParentIndex + offset;
                             ParticleInfo p0 = ParticleInfos[ppIndex];
 
-
                             float restLen = p.m_TransformNotNull
                                 ? math.distance(p0.m_TransformPosition, p.m_TransformPosition)
-                                : MathematicsUtil.Length(math.mul(p0.m_TransformLocalToWorldMatrix, new float4(p.m_EndOffset, 0)).xyz);
+                                : MathematicsUtil.Length(math.mul(p0.m_TransformLocalToWorldMatrix,
+                                    new float4(p.m_EndOffset, 0)).xyz);
 
                             // keep shape
                             float stiffness = math.lerp(1.0f, p.m_Stiffness, head.m_Weight);
@@ -660,44 +847,48 @@ namespace Plugins.FastDynamicBone
 
                         ParticleInfos[pIndex] = p;
                     }
+                    else
+                    {
+                        return;
+                    }
                 }
             }
         }
+    }
 
-        //考虑与UpdateAll合并
-        [BurstCompile]
-        private struct ApplyParticlesJob : IJobParallelFor
+    // 依赖parent 必须从根开始
+    [BurstCompile]
+    private struct ApplyParticlesJob : IJobParallelFor
+    {
+        [ReadOnly] [NativeDisableParallelForRestriction]
+        public NativeArray<HeadInfo> HeadInfos;
+
+        [NativeDisableParallelForRestriction] public NativeArray<ParticleInfo> ParticleInfos;
+
+        public void Execute(int index)
         {
-            [ReadOnly] [NativeDisableParallelForRestriction]
-            public NativeArray<HeadInfo> HeadInfos;
+            HeadInfo head = HeadInfos[index];
+            if (!head.m_NeedUpdate)
+                return;
+            int pMaxParticleLimit = head.m_MaxParticleLimit;
+            if (pMaxParticleLimit <= 0)
+                return;
 
-            [NativeDisableParallelForRestriction] public NativeArray<ParticleInfo> ParticleInfos;
-
-            public void Execute(int index)
+            int offset = index * pMaxParticleLimit;
+            for (int i = 1; i < pMaxParticleLimit; i++)
             {
-                ParticleInfo p = ParticleInfos[index];
-                int pMaxParticleLimit = p.m_MaxParticleLimit;
-                if (pMaxParticleLimit <= 0)
-                    return;
-                int pIndexLocal = index % pMaxParticleLimit;
-                if (pIndexLocal == 0)
-                    return;
-                int hIndex = index / pMaxParticleLimit;
-                HeadInfo head = HeadInfos[hIndex];
-                if (!head.m_NeedUpdate)
-                    return;
-                int offset = hIndex * pMaxParticleLimit;
-
-                if (pIndexLocal < head.m_ParticleCount)
+                if (i < head.m_ParticleCount)
                 {
+                    int pIndex = i + offset;
+                    ParticleInfo p = ParticleInfos[pIndex];
                     int ppIndex = offset + p.m_ParentIndex;
                     ParticleInfo p0 = ParticleInfos[ppIndex];
                     if (p0.m_ChildCount <= 1)
                     {
                         float3 localPos = p.m_TransformNotNull ? p.m_TransformLocalPosition : p.m_EndOffset;
 
-                        float3 v0 = math.normalizesafe(math.mul(p0.m_TransformLocalToWorldMatrix,new float4(localPos, 0)).xyz) *
-                                    MathematicsUtil.Length(localPos);
+                        float3 v0 = MathematicsUtil.TransformDirection(p0.m_TransformPosition,
+                            p0.m_TransformRotation, localPos);
                         float3 v1 = p.m_Position - p0.m_Position;
 
                         quaternion rot = MathematicsUtil.FromToRotation(v0, v1);
@@ -709,33 +900,42 @@ namespace Plugins.FastDynamicBone
                         p.m_TransformPosition = p.m_Position;
                     }
 
-                    ParticleInfos[index] = p;
+                    ParticleInfos[pIndex] = p;
                     ParticleInfos[ppIndex] = p0;
+                }
+                else
+                {
+                    return;
                 }
             }
         }
+    }
 
-        [BurstCompile]
-        private struct ApplyParticlesToTransformsJob : IJobParallelForTransform
+    // prefab重复创建的transform 引擎判断节点层级关系失效，随机的顺序...
+    // 本质是后设置父节点，带跑了已经在正确位置的子节点...改算local是没有用的
+    // 没有Particle级别平铺 不能随机写Pos/Rot
+    [BurstCompile]
+    private struct ApplyParticlesToTransformsJob : IJobParallelForTransform
+    {
+        [ReadOnly] [NativeDisableParallelForRestriction]
+        public NativeArray<ParticleInfo> ParticleInfos;
+
+        public void Execute(int index, TransformAccess transform)
         {
-            [ReadOnly] [NativeDisableParallelForRestriction]
-            public NativeArray<ParticleInfo> ParticleInfos;
-
-            public void Execute(int index, TransformAccess transform)
+            ParticleInfo p = ParticleInfos[index];
+            int pMaxParticleLimit = p.m_MaxParticleLimit;
+            if (pMaxParticleLimit <= 0)
+                return;
+            if (p.m_TransformNotNull)
             {
-                ParticleInfo p = ParticleInfos[index];
-                int pMaxParticleLimit = p.m_MaxParticleLimit;
-                if (pMaxParticleLimit <= 0)
-                    return;
                 if (p.m_ChildCount <= 1)
                     transform.rotation = p.m_TransformRotation;
                 if ((index % pMaxParticleLimit) == 0)
                     return;
-                if (p.m_TransformNotNull)
-                    transform.position = p.m_TransformPosition;
+                transform.position = p.m_TransformPosition;
             }
         }
-
-        #endregion
     }
+
+    #endregion
 }

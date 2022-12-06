@@ -1,647 +1,557 @@
-using System;
 using UnityEngine;
 using System.Collections.Generic;
 using Unity.Mathematics;
 
-namespace Plugins.FastDynamicBone
+[AddComponentMenu("Fast Dynamic Bone/Fast Dynamic Bone")]
+public class FastDynamicBone : MonoBehaviour
 {
-    [AddComponentMenu("Fast Dynamic Bone/Fast Dynamic Bone")]
-    public class FastDynamicBone : MonoBehaviour
+    [Tooltip("The roots of the transform hierarchy to apply physics.")]
+    public Transform m_Root = null;
+
+    public List<Transform> m_Roots = null;
+
+    [Tooltip("How much the bones slowed down.")] [Range(0, 1)]
+    public float m_Damping = 0.1f;
+
+    public AnimationCurve m_DampingDistrib = null;
+
+    [Tooltip("How much the force applied to return each bone to original orientation.")] [Range(0, 1)]
+    public float m_Elasticity = 0.1f;
+
+    public AnimationCurve m_ElasticityDistrib = null;
+
+    [Tooltip("How much bone's original orientation are preserved.")] [Range(0, 1)]
+    public float m_Stiffness = 0.1f;
+
+    public AnimationCurve m_StiffnessDistrib = null;
+
+    [Tooltip("How much character's position change is ignored in physics simulation.")] [Range(0, 1)]
+    public float m_Inert = 0;
+
+    public AnimationCurve m_InertDistrib = null;
+
+    [Tooltip("How much the bones slowed down when collide.")]
+    public float m_Friction = 0;
+
+    public AnimationCurve m_FrictionDistrib = null;
+
+    [Tooltip("Each bone can be a sphere to collide with colliders. Radius describe sphere's size.")]
+    public float m_Radius = 0;
+
+    public AnimationCurve m_RadiusDistrib = null;
+
+    [Tooltip("If End Length is not zero, an extra bone is generated at the end of transform hierarchy.")]
+    public float m_EndLength = 0;
+
+    [Tooltip("If End Offset is not zero, an extra bone is generated at the end of transform hierarchy.")]
+    public float3 m_EndOffset = float3.zero;
+
+    [Tooltip("The force apply to bones. Partial force apply to character's initial pose is cancelled out.")]
+    public float3 m_Gravity = float3.zero;
+
+    [Tooltip("The force apply to bones.")] public float3 m_Force = float3.zero;
+
+    [Tooltip("Control how physics blends with existing animation.")] [Range(0, 1)]
+    public float m_BlendWeight = 1.0f;
+
+    [Tooltip("Collider objects interact with the bones.")]
+    public List<FastDynamicBoneCollider> m_Colliders = null;
+
+    [Tooltip("Bones exclude from physics simulation.")]
+    public List<Transform> m_Exclusions = null;
+
+    public enum FreezeAxis
     {
-        [Tooltip("The roots of the transform hierarchy to apply physics.")]
-        public Transform m_Root = null;
+        None,
+        X,
+        Y,
+        Z
+    }
 
-        public List<Transform> m_Roots = null;
+    [Tooltip("Constrain bones to move on specified plane.")]
+    public FreezeAxis m_FreezeAxis = FreezeAxis.None;
 
-        [Tooltip("How much the bones slowed down.")] [Range(0, 1)]
-        public float m_Damping = 0.1f;
+    [Tooltip("Disable physics simulation automatically if character is far from camera or player.")]
+    public bool m_DistantDisable = false;
 
-        public AnimationCurve m_DampingDistrib = null;
+    public Transform m_ReferenceObject = null;
+    public float m_DistanceToObject = 20;
 
-        [Tooltip("How much the force applied to return each bone to original orientation.")] [Range(0, 1)]
-        public float m_Elasticity = 0.1f;
+    [HideInInspector] public float3 m_ObjectMove;
+    [HideInInspector] public float3 m_ObjectPrevPosition;
+    [HideInInspector] public float m_ObjectScale;
 
-        public AnimationCurve m_ElasticityDistrib = null;
+    [HideInInspector] public float m_Weight = 1.0f;
 
-        [Tooltip("How much bone's original orientation are preserved.")] [Range(0, 1)]
-        public float m_Stiffness = 0.1f;
+    bool m_DistantDisabled = false;
 
-        public AnimationCurve m_StiffnessDistrib = null;
+    public class Particle
+    {
+        public Transform m_Transform;
+        public int m_ParentIndex;
+        public int m_ChildCount;
+        public int m_Depth;
+        public float m_Damping;
+        public float m_Elasticity;
+        public float m_Stiffness;
+        public float m_Inert;
+        public float m_Friction;
+        public float m_Radius;
+        public float m_BoneLength;
+        public bool m_isCollide;
+        public bool m_TransformNotNull;
 
-        [Tooltip("How much character's position change is ignored in physics simulation.")] [Range(0, 1)]
-        public float m_Inert = 0;
-
-        public AnimationCurve m_InertDistrib = null;
-
-        [Tooltip("How much the bones slowed down when collide.")] [Range(0, 1)]
-        public float m_Friction = 0;
-
-        public AnimationCurve m_FrictionDistrib = null;
-
-        [Tooltip("Each bone can be a sphere to collide with colliders. Radius describe sphere's size.")]
-        public float m_Radius = 0;
-
-        public AnimationCurve m_RadiusDistrib = null;
-
-        [Tooltip("If End Length is not zero, an extra bone is generated at the end of transform hierarchy.")]
-        public float m_EndLength = 0;
-
-        [Tooltip("If End Offset is not zero, an extra bone is generated at the end of transform hierarchy.")]
-        public float3 m_EndOffset = float3.zero;
-
-        [Tooltip("The force apply to bones. Partial force apply to character's initial pose is cancelled out.")]
-        public float3 m_Gravity = float3.zero;
-
-        [Tooltip("The force apply to bones.")] public float3 m_Force = float3.zero;
-
-        [Tooltip("Control how physics blends with existing animation.")] [Range(0, 1)]
-        public float m_BlendWeight = 1.0f;
-
-        [Tooltip("Collider objects interact with the bones.")]
-        public List<FastDynamicBoneCollider> m_Colliders = null;
-
-        [Tooltip("Bones exclude from physics simulation.")]
-        public List<Transform> m_Exclusions = null;
-
-        public enum FreezeAxis
-        {
-            None,
-            X,
-            Y,
-            Z
-        }
-
-        [Tooltip("Constrain bones to move on specified plane.")]
-        public FreezeAxis m_FreezeAxis = FreezeAxis.None;
-
-        [Tooltip("Disable physics simulation automatically if character is far from camera or player.")]
-        public bool m_DistantDisable = false;
-
-        public Transform m_ReferenceObject = null;
-        public float m_DistanceToObject = 20;
-
-        [HideInInspector] public float3 m_ObjectMove;
-        [HideInInspector] public float3 m_ObjectPrevPosition;
-        [HideInInspector] public float m_ObjectScale;
-
-        float m_Time = 0;
-        [HideInInspector] public float m_Weight = 1.0f;
-        bool m_DistantDisabled = false;
-        int m_PreUpdateCount = 0;
-
-        public class Particle
-        {
-            public Transform m_Transform;
-            public int m_ParentIndex;
-            public int m_ChildCount;
-            public float m_Damping;
-            public float m_Elasticity;
-            public float m_Stiffness;
-            public float m_Inert;
-            public float m_Friction;
-            public float m_Radius;
-            public float m_BoneLength;
-            public bool m_isCollide;
-            public bool m_TransformNotNull;
-
-            public float3 m_Position;
-            public float3 m_PrevPosition;
-            public float3 m_EndOffset;
-            public float3 m_InitLocalPosition;
-            public quaternion m_InitLocalRotation;
-
-            // prepare data
-            public float3 m_TransformPosition;
-            public float3 m_TransformLocalPosition;
-            public float4x4 m_TransformLocalToWorldMatrix;
-        }
-
-        public class ParticleTree
-        {
-            public Transform m_Root;
-
-            // public int index; //head index 一个组件有多tree时 共享的collider组..manager里复制..
-            public float3 m_LocalGravity;
-            public float4x4 m_RootWorldToLocalMatrix;
-            public float4x4 m_RootLocalToWorldMatrix;
-            public float m_BoneTotalLength;
-            public List<Particle> m_Particles = new List<Particle>();
-
-            // prepare data
-            public float3 m_RestGravity;
-        }
-
-        [HideInInspector] public List<ParticleTree> m_ParticleTrees = new List<ParticleTree>();
+        public float3 m_Position;
+        public float3 m_PrevPosition;
+        public float3 m_EndOffset;
+        public float3 m_InitLocalPosition;
+        public quaternion m_InitLocalRotation;
 
         // prepare data
-        float m_DeltaTime;
-        [HideInInspector] public List<FastDynamicBoneCollider> m_EffectiveColliders;
+        // public float3 m_TransformPosition;
+        // public float3 m_TransformLocalPosition;
+        public float4x4 m_TransformLocalToWorldMatrix;
+    }
 
-        static int s_UpdateCount;
-        static int s_PrepareFrame;
+    public class ParticleTree
+    {
+        public Transform m_Root;
+        public float3 m_LocalGravity;
+        public Matrix4x4 m_RootWorldToLocalMatrix;
+        public quaternion m_RootWorldRotation;
+        public float m_BoneTotalLength;
+        public int m_MaxDepth;
+        public List<Particle> m_Particles = new List<Particle>();
+    }
 
-        void Start()
+    [HideInInspector] public List<ParticleTree> m_ParticleTrees = new List<ParticleTree>();
+
+    void LateUpdate()
+    {
+        CheckDistance();
+    }
+
+    // 角色隐藏是关MeshRender，
+    // transform、animator 和 DynamicBone 都是活的 what's fk
+    
+    void OnTransformParentChanged()
+    {
+        SetupParticles();
+    }
+
+    void CheckDistance()
+    {
+        if (!m_DistantDisable)
+            return;
+
+        Transform rt = m_ReferenceObject;
+        if (rt == null && Camera.main != null)
         {
-            SetupParticles();
+            rt = Camera.main.transform;
         }
 
-        // void FixedUpdate()
-        // {
-        //     if (m_UpdateMode == UpdateMode.AnimatePhysics)
-        //     {
-        //         PreUpdate();
-        //     }
-        // }
-        //
-        // void Update()
-        // {
-        //     if (m_UpdateMode != UpdateMode.AnimatePhysics)
-        //     {
-        //         PreUpdate();
-        //     }
-        //
-        //     ++s_UpdateCount;
-        // }
-        //
-        // void LateUpdate()
-        // {
-        //     if (m_PreUpdateCount == 0)
-        //         return;
-        //
-        //     if (s_UpdateCount > 0)
-        //     {
-        //         s_UpdateCount = 0;
-        //         ++s_PrepareFrame;
-        //     }
-        //
-        //     SetWeight(m_BlendWeight);
-        //
-        //     CheckDistance();
-        //     if (IsNeedUpdate())
-        //     {
-        //         Prepare();
-        //         UpdateParticles();
-        //         ApplyParticlesToTransforms();
-        //     }
-        //
-        //
-        //     m_PreUpdateCount = 0;
-        // }
-
-
-
-        void ReflushCollider()
+        if (rt != null)
         {
-            //manager collider clear
-            if (m_EffectiveColliders != null)
+            float d2 = (rt.position - transform.position).sqrMagnitude;
+            bool disable = d2 > m_DistanceToObject * m_DistanceToObject;
+            if (disable != m_DistantDisabled)
             {
-                m_EffectiveColliders.Clear();
-            }
-
-            if (m_Colliders != null)
-            {
-                for (int i = 0; i < m_Colliders.Count; ++i)
-                {
-                    FastDynamicBoneCollider c = m_Colliders[i];
-                    if (c != null && c.enabled)
-                    {
-                        if (m_EffectiveColliders == null)
-                        {
-                            m_EffectiveColliders = new List<FastDynamicBoneCollider>();
-                        }
-
-                        //manager collider add
-                        m_EffectiveColliders.Add(c);
-
-                        // if (c.PrepareFrame != s_PrepareFrame) // colliders used by many dynamic bones only prepares once
-                        // {
-                        //     c.Prepare();
-                        //     c.PrepareFrame = s_PrepareFrame;
-                        // }
-                    }
-                    else if (c == null)
-                    {
-                        Debug.LogWarningFormat("DynamicBone : Colliders index = {0} is null, Transform name = {1} .", i,
-                            transform.name);
-                    }
-                }
-                // FastDynamicBoneManager.Instance.ReflushCollider(this);
-            }
-        }
-
-        void LateUpdate()
-        {
-            CheckDistance();
-        }
-        void CheckDistance()
-        {
-            if (!m_DistantDisable)
-                return;
-
-            Transform rt = m_ReferenceObject;
-            if (rt == null && Camera.main != null)
-            {
-                rt = Camera.main.transform;
-            }
-
-            if (rt != null)
-            {
-                float d2 = (rt.position - transform.position).sqrMagnitude;
-                bool disable = d2 > m_DistanceToObject * m_DistanceToObject;
-                if (disable != m_DistantDisabled)
-                {
-                    if (!disable)
-                    {
-                        ResetParticlesPosition();
-                        FastDynamicBoneManager.Instance?.AddBone(this);
-                    }
-                    else
-                    {
-                        FastDynamicBoneManager.Instance?.RemoveBone(this);
-                    }
-
-                    m_DistantDisabled = disable;
-                }
-            }
-        }
-
-        void OnEnable()
-        {
-            ResetParticlesPosition();
-            // SetupParticles();
-            FastDynamicBoneManager.Instance.AddBone(this);
-        }
-
-        void OnDisable()
-        {
-            InitTransforms();
-            FastDynamicBoneManager.Instance?.RemoveBone(this);
-            //collider 会在下一帧刷新..
-        }
-
-        //OnValidate跟单例相性不合..
-        // void OnValidate()
-        // {
-        //     // m_UpdateRate = Mathf.Max(m_UpdateRate, 0);
-        //     m_Damping = Mathf.Clamp01(m_Damping);
-        //     m_Elasticity = Mathf.Clamp01(m_Elasticity);
-        //     m_Stiffness = Mathf.Clamp01(m_Stiffness);
-        //     m_Inert = Mathf.Clamp01(m_Inert);
-        //     m_Friction = Mathf.Clamp01(m_Friction);
-        //     m_Radius = Mathf.Max(m_Radius, 0);
-        //     
-        //     // Awake附近调一次.slider持续
-        //     // 拖拽填空的不会触发这里...so 原版collider是每次clear再add
-        //     if (Application.isEditor && Application.isPlaying && isActiveAndEnabled)
-        //     {
-        //         Debug.LogWarningFormat("this OnValidate pos = {0}", transform.position);
-        //         if (IsRootChanged())
-        //         {
-        //             InitTransforms();
-        //             SetupParticles();
-        //         }
-        //         else
-        //             UpdateParameters();
-        //     }
-        // }
-
-        bool IsRootChanged()
-        {
-            var roots = new List<Transform>();
-            if (m_Root != null)
-            {
-                roots.Add(m_Root);
-            }
-
-            if (m_Roots != null)
-            {
-                foreach (var root in m_Roots)
-                {
-                    if (root != null && !roots.Contains(root))
-                    {
-                        roots.Add(root);
-                    }
-                }
-            }
-
-            if (roots.Count != m_ParticleTrees.Count)
-                return true;
-
-            for (int i = 0; i < roots.Count; ++i)
-            {
-                if (roots[i] != m_ParticleTrees[i].m_Root)
-                    return true;
-            }
-
-            return false;
-        }
-
-        // void OnDidApplyAnimationProperties()
-        // {
-        //     UpdateParameters();
-        // }
-
-        void OnDrawGizmosSelected()
-        {
-            if (!enabled)
-                return;
-
-            if (Application.isEditor && !Application.isPlaying && transform.hasChanged)
-            {
-                //InitTransforms();
-                SetupParticles(false);
-            }
-            else
-                FastDynamicBoneManager.Instance?.ReadBone(this);
-
-            Gizmos.color = Color.white;
-            for (int i = 0; i < m_ParticleTrees.Count; ++i)
-            {
-                DrawGizmos(m_ParticleTrees[i]);
-            }
-        }
-
-        void DrawGizmos(ParticleTree pt)
-        {
-            for (int i = 0; i < pt.m_Particles.Count; ++i)
-            {
-                Particle p = pt.m_Particles[i];
-                if (p.m_ParentIndex >= 0)
-                {
-                    Particle p0 = pt.m_Particles[p.m_ParentIndex];
-                    Gizmos.DrawLine(p.m_Position, p0.m_Position);
-                }
-
-                if (p.m_Radius > 0)
-                {
-                    Gizmos.DrawWireSphere(p.m_Position, p.m_Radius * m_ObjectScale);
-                }
-            }
-        }
-
-        public void SetWeight(float w)
-        {
-            if (m_Weight != w)
-            {
-                if (w == 0)
-                {
-                    InitTransforms();
-                }
-                else if (m_Weight == 0)
+                if (!disable)
                 {
                     ResetParticlesPosition();
-                }
-
-                m_Weight = m_BlendWeight = w;
-            }
-        }
-
-
-        public void SetupParticles(bool setManager = true)
-        {
-            //manager clear
-            if (setManager)
-                FastDynamicBoneManager.Instance.RemoveBone(this);
-
-            m_ParticleTrees.Clear();
-
-            if (m_Root != null)
-            {
-                AppendParticleTree(m_Root);
-            }
-
-            if (m_Roots != null)
-            {
-                for (int i = 0; i < m_Roots.Count; ++i)
-                {
-                    Transform root = m_Roots[i];
-                    if (root == null)
-                        continue;
-
-                    if (m_ParticleTrees.Exists(x => x.m_Root == root))
-                        continue;
-
-                    AppendParticleTree(root);
-                }
-            }
-
-            m_ObjectScale = math.abs(transform.lossyScale.x);
-            m_ObjectPrevPosition = transform.position;
-            m_ObjectMove = float3.zero;
-
-            for (int i = 0; i < m_ParticleTrees.Count; ++i)
-            {
-                ParticleTree pt = m_ParticleTrees[i];
-                AppendParticles(pt, pt.m_Root, -1, 0);
-            }
-
-
-            UpdateParameters();
-
-            //manager add
-            if (setManager)
-                FastDynamicBoneManager.Instance.AddBone(this);
-        }
-
-        void AppendParticleTree(Transform root)
-        {
-            if (root == null)
-                return;
-
-            var pt = new ParticleTree();
-            pt.m_Root = root;
-            pt.m_RootWorldToLocalMatrix = root.worldToLocalMatrix;
-            pt.m_RootLocalToWorldMatrix = root.localToWorldMatrix;
-            m_ParticleTrees.Add(pt);
-        }
-
-        void AppendParticles(ParticleTree pt, Transform b, int parentIndex, float boneLength)
-        {
-            var p = new Particle();
-            p.m_Transform = b;
-            p.m_TransformNotNull = b != null;
-            p.m_ParentIndex = parentIndex;
-
-            if (b != null)
-            {
-                p.m_Position = p.m_PrevPosition = b.position;
-                p.m_InitLocalPosition = b.localPosition;
-                p.m_InitLocalRotation = b.localRotation;
-            }
-            else // end bone
-            {
-                Transform pb = pt.m_Particles[parentIndex].m_Transform;
-                if (m_EndLength > 0)
-                {
-                    Transform ppb = pb.parent;
-                    if (ppb != null)
-                    {
-                        p.m_EndOffset = pb.InverseTransformPoint((pb.position * 2 - ppb.position)) * m_EndLength;
-                    }
-                    else
-                    {
-                        p.m_EndOffset = new float3(m_EndLength, 0, 0);
-                    }
+                    FastDynamicBoneManager.Instance?.AddBone(this);
                 }
                 else
                 {
-                    p.m_EndOffset = pb.InverseTransformPoint(transform.TransformDirection(m_EndOffset) + pb.position);
+                    FastDynamicBoneManager.Instance?.RemoveBone(this);
                 }
 
-                p.m_Position = p.m_PrevPosition = pb.TransformPoint(p.m_EndOffset);
-                // p.m_Position = p.m_PrevPosition =
-                //     MathematicsUtil.LocalToWorldPosition(pb.position, pb.rotation, p.m_EndOffset);
-                p.m_InitLocalPosition = float3.zero;
-                p.m_InitLocalRotation = quaternion.identity;
+                m_DistantDisabled = disable;
             }
+        }
+    }
 
-            if (parentIndex >= 0)
+    // public bool IsNeedUpdate()
+    // {
+    //     return m_Weight > 0 && !(m_DistantDisable && m_DistantDisabled);
+    // }
+
+    void Start()
+    {
+        SetupParticles();
+    }
+    
+    void OnDestroy()
+    {
+        FastDynamicBoneManager.Instance?.RemoveBone(this);
+        // InitTransforms();
+    }
+
+    //OnValidate跟单例相性不合..
+    void OnValidate()
+    {
+        m_Damping = Mathf.Clamp01(m_Damping);
+        m_Elasticity = Mathf.Clamp01(m_Elasticity);
+        m_Stiffness = Mathf.Clamp01(m_Stiffness);
+        m_Inert = Mathf.Clamp01(m_Inert);
+        m_Friction = Mathf.Clamp01(m_Friction);
+        m_Radius = Mathf.Max(m_Radius, 0);
+    
+        // Awake附近调一次.slider持续
+        // 拖拽填空的不会触发这里...so 原版collider是每次clear再add
+        if (Application.isEditor && Application.isPlaying && isActiveAndEnabled)
+        {
+            if (IsRootChanged())
             {
-                boneLength += math.distance((float3)pt.m_Particles[parentIndex].m_Transform.position, p.m_Position);
-                p.m_BoneLength = boneLength;
-                pt.m_BoneTotalLength = math.max(pt.m_BoneTotalLength, boneLength);
-                ++pt.m_Particles[parentIndex].m_ChildCount;
+                InitTransforms();
+                SetupParticles();
             }
-
-            int index = pt.m_Particles.Count;
-            pt.m_Particles.Add(p);
-
-            if (b != null)
+            else
             {
-                for (int i = 0; i < b.childCount; ++i)
-                {
-                    Transform child = b.GetChild(i);
-                    bool exclude = false;
-                    if (m_Exclusions != null)
-                    {
-                        exclude = m_Exclusions.Contains(child);
-                    }
+                UpdateParameters();
+                // manager update value 
+                FastDynamicBoneManager.Instance.UpdateBone(this);
+            }
+        }
+    }
 
-                    if (!exclude)
-                    {
-                        AppendParticles(pt, child, index, boneLength);
-                    }
-                    else if (m_EndLength > 0 || (Vector3)m_EndOffset != Vector3.zero)
-                    {
-                        AppendParticles(pt, null, index, boneLength);
-                    }
-                }
+    bool IsRootChanged()
+    {
+        var roots = new List<Transform>();
+        if (m_Root != null)
+        {
+            roots.Add(m_Root);
+        }
 
-                if (b.childCount == 0 && (m_EndLength > 0 || (Vector3)m_EndOffset != Vector3.zero))
+        if (m_Roots != null)
+        {
+            foreach (var root in m_Roots)
+            {
+                if (root != null && !roots.Contains(root))
                 {
-                    AppendParticles(pt, null, index, boneLength);
+                    roots.Add(root);
                 }
             }
         }
 
-        public void UpdateParameters()
+        if (roots.Count != m_ParticleTrees.Count)
+            return true;
+
+        for (int i = 0; i < roots.Count; ++i)
         {
-            SetWeight(m_BlendWeight);
-
-            for (int i = 0; i < m_ParticleTrees.Count; ++i)
-            {
-                UpdateParameters(m_ParticleTrees[i]);
-            }
-
-            //manager update value 
-            // FastDynamicBoneManager.Instance.UpdateBone(this);
+            if (roots[i] != m_ParticleTrees[i].m_Root)
+                return true;
         }
 
-        void UpdateParameters(ParticleTree pt)
+        return false;
+    }
+
+    void OnDidApplyAnimationProperties()
+    {
+        UpdateParameters();
+        FastDynamicBoneManager.Instance?.UpdateBone(this);
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        if (!enabled)
+            return;
+
+        if (Application.isEditor && !Application.isPlaying && transform.hasChanged)
         {
-            // m_LocalGravity = m_Root.InverseTransformDirection(m_Gravity);
-            // pt.m_LocalGravity = pt.m_RootWorldToLocalMatrix.MultiplyVector(m_Gravity).normalized * math.length(m_Gravity);
-            pt.m_LocalGravity =
-                math.normalizesafe(math.mul(pt.m_RootWorldToLocalMatrix, new float4(m_Gravity.xyz, 0)).xyz) *
-                MathematicsUtil.Length(m_Gravity);
+            //InitTransforms();
+            SetupParticles(false);
+        }
+        else
+            FastDynamicBoneManager.Instance?.ReadBone(this);
 
-            for (int i = 0; i < pt.m_Particles.Count; ++i)
+        Gizmos.color = Color.white;
+        for (int i = 0; i < m_ParticleTrees.Count; ++i)
+        {
+            DrawGizmos(m_ParticleTrees[i]);
+        }
+    }
+
+    void DrawGizmos(ParticleTree pt)
+    {
+        for (int i = 0; i < pt.m_Particles.Count; ++i)
+        {
+            Particle p = pt.m_Particles[i];
+            if (p.m_ParentIndex >= 0)
             {
-                Particle p = pt.m_Particles[i];
-                p.m_Damping = m_Damping;
-                p.m_Elasticity = m_Elasticity;
-                p.m_Stiffness = m_Stiffness;
-                p.m_Inert = m_Inert;
-                p.m_Friction = m_Friction;
-                p.m_Radius = m_Radius;
+                Particle p0 = pt.m_Particles[p.m_ParentIndex];
+                Gizmos.DrawLine(p.m_Position, p0.m_Position);
+            }
 
-                if (pt.m_BoneTotalLength > 0)
+            if (p.m_Radius > 0)
+            {
+                Gizmos.DrawWireSphere(p.m_Position, p.m_Radius * m_ObjectScale);
+            }
+        }
+    }
+
+    public void SetWeight(float w)
+    {
+        if (m_Weight != w)
+        {
+            if (w == 0)
+            {
+                InitTransforms();
+            }
+            else if (m_Weight == 0)
+            {
+                ResetParticlesPosition();
+            }
+
+            m_Weight = m_BlendWeight = w;
+        }
+    }
+
+    public void SetupParticles(bool setManager = true)
+    {
+        //manager clear
+        if (setManager)
+            FastDynamicBoneManager.Instance.RemoveBone(this);
+
+        m_ParticleTrees.Clear();
+
+        if (m_Root != null)
+        {
+            AppendParticleTree(m_Root);
+        }
+
+        if (m_Roots != null)
+        {
+            for (int i = 0; i < m_Roots.Count; ++i)
+            {
+                Transform root = m_Roots[i];
+                if (root == null)
+                    continue;
+
+                if (m_ParticleTrees.Exists(x => x.m_Root == root))
+                    continue;
+
+                AppendParticleTree(root);
+            }
+        }
+
+        m_ObjectScale = math.abs(transform.lossyScale.x);
+        m_ObjectPrevPosition = transform.position;
+        m_ObjectMove = float3.zero;
+
+        for (int i = 0; i < m_ParticleTrees.Count; ++i)
+        {
+            ParticleTree pt = m_ParticleTrees[i];
+            AppendParticles(pt, pt.m_Root, -1, 0, 0);
+        }
+
+
+        UpdateParameters();
+
+        //manager add 
+        if (setManager)
+            FastDynamicBoneManager.Instance.AddBone(this);
+    }
+
+    void AppendParticleTree(Transform root)
+    {
+        if (root == null)
+            return;
+
+        var pt = new ParticleTree();
+        pt.m_Root = root;
+        pt.m_RootWorldToLocalMatrix = root.worldToLocalMatrix;
+        pt.m_RootWorldRotation = root.rotation;
+        m_ParticleTrees.Add(pt);
+    }
+
+    void AppendParticles(ParticleTree pt, Transform b, int parentIndex, float boneLength, int depth)
+    {
+        var p = new Particle();
+        p.m_Transform = b;
+        p.m_TransformNotNull = b != null;
+        p.m_ParentIndex = parentIndex;
+        p.m_Depth = depth;
+
+        if (b != null)
+        {
+            p.m_Position = p.m_PrevPosition = b.position;
+            p.m_InitLocalPosition = b.localPosition;
+            p.m_InitLocalRotation = b.localRotation;
+        }
+        else // end bone
+        {
+            Transform pb = pt.m_Particles[parentIndex].m_Transform;
+            if (m_EndLength > 0)
+            {
+                Transform ppb = pb.parent;
+                if (ppb != null)
                 {
-                    float a = p.m_BoneLength / pt.m_BoneTotalLength;
-                    if (m_DampingDistrib != null && m_DampingDistrib.keys.Length > 0)
-                        p.m_Damping *= m_DampingDistrib.Evaluate(a);
-                    if (m_ElasticityDistrib != null && m_ElasticityDistrib.keys.Length > 0)
-                        p.m_Elasticity *= m_ElasticityDistrib.Evaluate(a);
-                    if (m_StiffnessDistrib != null && m_StiffnessDistrib.keys.Length > 0)
-                        p.m_Stiffness *= m_StiffnessDistrib.Evaluate(a);
-                    if (m_InertDistrib != null && m_InertDistrib.keys.Length > 0)
-                        p.m_Inert *= m_InertDistrib.Evaluate(a);
-                    if (m_FrictionDistrib != null && m_FrictionDistrib.keys.Length > 0)
-                        p.m_Friction *= m_FrictionDistrib.Evaluate(a);
-                    if (m_RadiusDistrib != null && m_RadiusDistrib.keys.Length > 0)
-                        p.m_Radius *= m_RadiusDistrib.Evaluate(a);
+                    p.m_EndOffset = pb.InverseTransformPoint((pb.position * 2 - ppb.position)) * m_EndLength;
+                }
+                else
+                {
+                    p.m_EndOffset = new float3(m_EndLength, 0, 0);
+                }
+            }
+            else
+            {
+                p.m_EndOffset = pb.InverseTransformPoint(transform.TransformDirection(m_EndOffset) + pb.position);
+            }
+
+            p.m_Position = p.m_PrevPosition = pb.TransformPoint(p.m_EndOffset);
+            // p.m_Position = p.m_PrevPosition =
+            //     MathematicsUtil.LocalToWorldPosition(pb.position, pb.rotation, p.m_EndOffset);
+            p.m_InitLocalPosition = float3.zero;
+            p.m_InitLocalRotation = quaternion.identity;
+        }
+
+        if (parentIndex >= 0)
+        {
+            boneLength += math.distance((float3)pt.m_Particles[parentIndex].m_Transform.position, p.m_Position);
+            p.m_BoneLength = boneLength;
+            pt.m_BoneTotalLength = math.max(pt.m_BoneTotalLength, boneLength);
+            pt.m_MaxDepth = math.max(pt.m_MaxDepth, depth);
+            ++pt.m_Particles[parentIndex].m_ChildCount;
+        }
+
+        int index = pt.m_Particles.Count;
+        pt.m_Particles.Add(p);
+        depth++;
+
+        if (b != null)
+        {
+            for (int i = 0; i < b.childCount; ++i)
+            {
+                Transform child = b.GetChild(i);
+                bool exclude = false;
+                if (m_Exclusions != null)
+                {
+                    exclude = m_Exclusions.Contains(child);
                 }
 
-                p.m_Damping = Mathf.Clamp01(p.m_Damping);
-                p.m_Elasticity = Mathf.Clamp01(p.m_Elasticity);
-                p.m_Stiffness = Mathf.Clamp01(p.m_Stiffness);
-                p.m_Inert = Mathf.Clamp01(p.m_Inert);
-                p.m_Friction = Mathf.Clamp01(p.m_Friction);
-                p.m_Radius = Mathf.Max(p.m_Radius, 0);
-            }
-        }
-
-        void InitTransforms()
-        {
-            for (int i = 0; i < m_ParticleTrees.Count; ++i)
-            {
-                InitTransforms(m_ParticleTrees[i]);
-            }
-        }
-
-        void InitTransforms(ParticleTree pt)
-        {
-            for (int i = 0; i < pt.m_Particles.Count; ++i)
-            {
-                Particle p = pt.m_Particles[i];
-                if (p.m_TransformNotNull)
+                if (!exclude)
                 {
-                    p.m_Transform.localPosition = p.m_InitLocalPosition;
-                    p.m_Transform.localRotation = p.m_InitLocalRotation;
+                    AppendParticles(pt, child, index, boneLength, depth);
+                }
+                else if (m_EndLength > 0 || (Vector3)m_EndOffset != Vector3.zero)
+                {
+                    AppendParticles(pt, null, index, boneLength, depth);
                 }
             }
-        }
 
-        void ResetParticlesPosition()
-        {
-            for (int i = 0; i < m_ParticleTrees.Count; ++i)
+            if (b.childCount == 0 && (m_EndLength > 0 || (Vector3)m_EndOffset != Vector3.zero))
             {
-                ResetParticlesPosition(m_ParticleTrees[i]);
+                AppendParticles(pt, null, index, boneLength, depth);
+            }
+        }
+    }
+
+    public void UpdateParameters()
+    {
+        // SetWeight(m_BlendWeight);
+        m_Weight = m_BlendWeight;
+        
+        for (int i = 0; i < m_ParticleTrees.Count; ++i)
+        {
+            UpdateParameters(m_ParticleTrees[i]);
+        }
+    }
+
+    void UpdateParameters(ParticleTree pt)
+    {
+        // m_LocalGravity = m_Root.InverseTransformDirection(m_Gravity);
+        // pt.m_LocalGravity = pt.m_RootWorldToLocalMatrix.MultiplyVector(m_Gravity).normalized * math.length(m_Gravity);
+        pt.m_LocalGravity =
+            math.normalizesafe(math.mul(pt.m_RootWorldToLocalMatrix, new float4(m_Gravity.xyz, 0)).xyz) *
+            MathematicsUtil.Length(m_Gravity);
+
+        for (int i = 0; i < pt.m_Particles.Count; ++i)
+        {
+            Particle p = pt.m_Particles[i];
+            p.m_Damping = m_Damping;
+            p.m_Elasticity = m_Elasticity;
+            p.m_Stiffness = m_Stiffness;
+            p.m_Inert = m_Inert;
+            p.m_Friction = m_Friction;
+            p.m_Radius = m_Radius;
+
+            if (pt.m_BoneTotalLength > 0)
+            {
+                float a = p.m_BoneLength / pt.m_BoneTotalLength;
+                if (m_DampingDistrib != null && m_DampingDistrib.keys.Length > 0)
+                    p.m_Damping *= m_DampingDistrib.Evaluate(a);
+                if (m_ElasticityDistrib != null && m_ElasticityDistrib.keys.Length > 0)
+                    p.m_Elasticity *= m_ElasticityDistrib.Evaluate(a);
+                if (m_StiffnessDistrib != null && m_StiffnessDistrib.keys.Length > 0)
+                    p.m_Stiffness *= m_StiffnessDistrib.Evaluate(a);
+                if (m_InertDistrib != null && m_InertDistrib.keys.Length > 0)
+                    p.m_Inert *= m_InertDistrib.Evaluate(a);
+                if (m_FrictionDistrib != null && m_FrictionDistrib.keys.Length > 0)
+                    p.m_Friction *= m_FrictionDistrib.Evaluate(a);
+                if (m_RadiusDistrib != null && m_RadiusDistrib.keys.Length > 0)
+                    p.m_Radius *= m_RadiusDistrib.Evaluate(a);
             }
 
-            m_ObjectPrevPosition = transform.position;
+            p.m_Damping = Mathf.Clamp01(p.m_Damping);
+            p.m_Elasticity = Mathf.Clamp01(p.m_Elasticity);
+            p.m_Stiffness = Mathf.Clamp01(p.m_Stiffness);
+            p.m_Inert = Mathf.Clamp01(p.m_Inert);
+            p.m_Friction = Mathf.Clamp01(p.m_Friction);
+            p.m_Radius = Mathf.Max(p.m_Radius, 0);
+        }
+    }
+
+    void InitTransforms()
+    {
+        for (int i = 0; i < m_ParticleTrees.Count; ++i)
+        {
+            InitTransforms(m_ParticleTrees[i]);
+        }
+    }
+
+    void InitTransforms(ParticleTree pt)
+    {
+        for (int i = 0; i < pt.m_Particles.Count; ++i)
+        {
+            Particle p = pt.m_Particles[i];
+            if (p.m_TransformNotNull)
+            {
+                p.m_Transform.localPosition = p.m_InitLocalPosition;
+                p.m_Transform.localRotation = p.m_InitLocalRotation;
+            }
+        }
+    }
+
+    void ResetParticlesPosition()
+    {
+        for (int i = 0; i < m_ParticleTrees.Count; ++i)
+        {
+            ResetParticlesPosition(m_ParticleTrees[i]);
         }
 
-        void ResetParticlesPosition(ParticleTree pt)
-        {
-            for (int i = 0; i < pt.m_Particles.Count; ++i)
-            {
-                Particle p = pt.m_Particles[i];
-                if (p.m_TransformNotNull)
-                {
-                    p.m_Position = p.m_PrevPosition = p.m_Transform.position;
-                }
-                else // end bone
-                {
-                    // Transform pb = pt.m_Particles[p.m_ParentIndex].m_Transform;
-                    // p.m_Position = p.m_PrevPosition = pb.TransformPoint(p.m_EndOffset);p.m_Position = p.m_PrevPosition = MathematicsUtil.LocalToWorldPosition(pb.position,pb.rotation,p.m_EndOffset);
-                    p.m_Position = p.m_PrevPosition =
-                        math.mul(pt.m_Particles[p.m_ParentIndex].m_TransformLocalToWorldMatrix,
-                            new float4(p.m_EndOffset, 1)).xyz;
-                }
+        m_ObjectPrevPosition = transform.position;
+    }
 
-                p.m_isCollide = false;
+    void ResetParticlesPosition(ParticleTree pt)
+    {
+        for (int i = 0; i < pt.m_Particles.Count; ++i)
+        {
+            Particle p = pt.m_Particles[i];
+            if (p.m_TransformNotNull)
+            {
+                p.m_Position = p.m_PrevPosition = p.m_Transform.position;
             }
+            else // end bone
+            {
+                // Transform pb = pt.m_Particles[p.m_ParentIndex].m_Transform;
+                // p.m_Position = p.m_PrevPosition = pb.TransformPoint(p.m_EndOffset);p.m_Position = p.m_PrevPosition = MathematicsUtil.LocalToWorldPosition(pb.position,pb.rotation,p.m_EndOffset);
+                p.m_Position = p.m_PrevPosition =
+                    math.mul(pt.m_Particles[p.m_ParentIndex].m_TransformLocalToWorldMatrix,
+                        new float4(p.m_EndOffset, 1)).xyz;
+            }
+
+            p.m_isCollide = false;
         }
     }
 }
